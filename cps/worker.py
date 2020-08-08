@@ -23,7 +23,9 @@ import re
 import smtplib
 import socket
 import time
+import math
 import threading
+import requests
 try:
     import queue
 except ImportError:
@@ -67,6 +69,7 @@ TASK_EMAIL = 1
 TASK_CONVERT = 2
 TASK_UPLOAD = 3
 TASK_CONVERT_ANY = 4
+TASK_HB_DOWNLOAD = 5
 
 RET_FAIL = 0
 RET_SUCCESS = 1
@@ -213,6 +216,8 @@ class WorkerThread(threading.Thread):
                         self._convert_any_format()
                     if self.queue[index]['taskType'] == TASK_CONVERT_ANY:
                         self._convert_any_format()
+                    if self.queue[index]['taskType'] == TASK_HB_DOWNLOAD:
+                        self._download_hb()
                     # TASK_UPLOAD is handled implicitly
                     self.doLock.acquire()
                     self.current += 1
@@ -256,6 +261,46 @@ class WorkerThread(threading.Thread):
                                                    + self.UIqueue[self.current]['formRuntime'].microseconds
         self.doLock.release()
         return self.UIqueue
+
+    def _download_hb(self):
+        # convert book, and upload in case of google drive
+        self.doLock.acquire()
+
+        index = self.current
+        self.doLock.release()
+        self.UIqueue[index]['stat'] = STAT_STARTED
+        self.queue[index]['starttime'] = datetime.now()
+        self.UIqueue[index]['formStarttime'] = self.queue[index]['starttime']
+        curr_task = self.queue[index]['taskType']
+
+        url = self.queue[index]['url']
+        auth = self.queue[index]['auth']
+
+        headers={
+            'Accept': 'application/json',
+            'Accept-Charset': 'utf-8',
+            'User-Agent': 'calibre-web-hb-downloader',
+        }
+        cookies = {'_simpleauth_sess': 'eyJ1c2VyX2lkIjo2NDA5ODYyMjQ1Mzg0MTkyLCJpZCI6Ik5hNXpLSGhPN0wiLCJhdXRoX3RpbWUiOjE1Nzk2NDE3Nzl9|1596862507|01a2a06cf464a9fea5195872247c2e5d67479c00'}
+
+        orders = requests.get('https://www.humblebundle.com/api/v1/user/order?ajax=true', headers=headers, cookies=cookies)
+        print(orders.json())
+        # todo: filename will represent the file being downloaded...?
+        with open('whoops.epub', 'wb') as f:
+            response = requests.get(url, stream=True)
+            total = response.headers.get('content-length')
+
+            if total is None:
+                f.write(response.content)
+            else:
+                downloaded = 0
+                total = int(total)
+                for data in response.iter_content(chunk_size=max(int(total / 1000), 1024 * 1024)):
+                    downloaded += len(data)
+                    f.write(data)
+                    self.UIqueue[index]['progress'] = '{} %'.format(math.floor((downloaded / total) * 100))
+
+        self._handleSuccess()
 
     def _convert_any_format(self):
         # convert book, and upload in case of google drive
@@ -448,6 +493,21 @@ class WorkerThread(threading.Thread):
         self.last=len(self.queue)
         self.doLock.release()
 
+    def add_hb_download(self, user_name, url, auth):
+        self.doLock.acquire()
+        if self.last >= 20:
+            self._delete_completed_tasks()
+        # progress, runtime, and status = 0
+        self.id += 1
+        task = TASK_HB_DOWNLOAD
+
+        self.queue.append({'url':url, 'auth':auth, 'taskType': task, 'settings': {}})
+        self.UIqueue.append({'user': user_name, 'formStarttime': '', 'progress': " 0 %", 'taskMess': 'Downlaoding HB booko WHAT.epub',
+                             'runtime': '0 s', 'stat': STAT_WAITING,'id': self.id, 'taskType': task } )
+
+        self.last=len(self.queue)
+        self.doLock.release()
+
     def add_email(self, subject, filepath, attachment, settings, recipient, user_name, taskMessage,
                   text):
         # if more than 20 entries in the list, clean the list
@@ -594,6 +654,9 @@ def add_upload(user_name, taskMessage):
 def add_convert(file_path, bookid, user_name, taskMessage, settings, kindle_mail=None):
     return _worker.add_convert(file_path, bookid, user_name, taskMessage, settings, kindle_mail)
 
+
+def add_hb_download(user_name, url, auth):
+    return _worker.add_hb_download(user_name, url, auth)
 
 _worker = WorkerThread()
 _worker.start()

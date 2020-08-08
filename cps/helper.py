@@ -64,7 +64,7 @@ from . import gdriveutils as gd
 from .constants import STATIC_DIR as _STATIC_DIR
 from .pagination import Pagination
 from .subproc_wrapper import process_wait
-from .worker import STAT_WAITING, STAT_FAIL, STAT_STARTED, STAT_FINISH_SUCCESS
+from .worker import STAT_WAITING, STAT_FAIL, STAT_STARTED, STAT_FINISH_SUCCESS, TASK_HB_DOWNLOAD
 from .worker import TASK_EMAIL, TASK_CONVERT, TASK_UPLOAD, TASK_CONVERT_ANY
 
 
@@ -104,6 +104,7 @@ def convert_book_format(book_id, calibrepath, old_book_format, new_book_format, 
         settings['old_book_format'] = old_book_format
         settings['new_book_format'] = new_book_format
         worker.add_convert(file_path, book.id, user_id, text, settings, kindle_mail)
+        worker.add_hb_download(user_id, 'https://speed.hetzner.de/100MB.bin', None)
         return None
     else:
         error_message = _(u"%(format)s not found: %(fn)s",
@@ -725,6 +726,8 @@ def render_task_status(tasklist):
                     task['taskMessage'] = _(u'Convert: ') + task['taskMess']
                 elif task['taskType'] == TASK_UPLOAD:
                     task['taskMessage'] = _(u'Upload: ') + task['taskMess']
+                elif task['taskType'] == TASK_HB_DOWNLOAD:
+                    task['taskMessage'] = _(u'Humble Bundle Download: ') + task['taskMess']
                 elif task['taskType'] == TASK_CONVERT_ANY:
                     task['taskMessage'] = _(u'Convert: ') + task['taskMess']
                 else:
