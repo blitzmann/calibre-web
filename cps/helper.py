@@ -64,7 +64,7 @@ from . import gdriveutils as gd
 from .constants import STATIC_DIR as _STATIC_DIR
 from .pagination import Pagination
 from .subproc_wrapper import process_wait
-from .worker import STAT_WAITING, STAT_FAIL, STAT_STARTED, STAT_FINISH_SUCCESS, TASK_HB_DOWNLOAD
+from .worker import STAT_WAITING, STAT_FAIL, STAT_STARTED, STAT_FINISH_SUCCESS, TASK_HB_DOWNLOAD, TASK_HB_LINK
 from .worker import TASK_EMAIL, TASK_CONVERT, TASK_UPLOAD, TASK_CONVERT_ANY
 
 
@@ -104,7 +104,6 @@ def convert_book_format(book_id, calibrepath, old_book_format, new_book_format, 
         settings['old_book_format'] = old_book_format
         settings['new_book_format'] = new_book_format
         worker.add_convert(file_path, book.id, user_id, text, settings, kindle_mail)
-        worker.add_hb_download(user_id, 'https://speed.hetzner.de/100MB.bin', None)
         return None
     else:
         error_message = _(u"%(format)s not found: %(fn)s",
@@ -255,7 +254,7 @@ def get_valid_filename(value, replace_whitespace=True):
         value = re.sub(r'[\*\+:\\\"/<>\?]+', u'_', value, flags=re.U)
         # pipe has to be replaced with comma
         value = re.sub(r'[\|]+', u',', value, flags=re.U)
-    value = value[:128]
+    value = value[:128].strip()
     if not value:
         raise ValueError("Filename cannot be empty")
     if sys.version_info.major == 3:
@@ -727,7 +726,9 @@ def render_task_status(tasklist):
                 elif task['taskType'] == TASK_UPLOAD:
                     task['taskMessage'] = _(u'Upload: ') + task['taskMess']
                 elif task['taskType'] == TASK_HB_DOWNLOAD:
-                    task['taskMessage'] = _(u'Humble Bundle Download: ') + task['taskMess']
+                    task['taskMessage'] = _(u'Humble Download: ') + task['taskMess']
+                elif task['taskType'] == TASK_HB_LINK:
+                    task['taskMessage'] = _(u'Humble Processing / Linking: ') + task['taskMess']
                 elif task['taskType'] == TASK_CONVERT_ANY:
                     task['taskMessage'] = _(u'Convert: ') + task['taskMess']
                 else:
@@ -799,3 +800,4 @@ def get_download_link(book_id, book_format, client):
         return do_download_file(book, book_format, client, data1, headers)
     else:
         abort(404)
+

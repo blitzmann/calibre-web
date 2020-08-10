@@ -361,6 +361,15 @@ class CalibreDB(threading.Thread):
                     self.log.error("Database error: %s", e)
                     # self._handleError(_(u"Database error: %(error)s.", error=e))
                     # return
+            if i['task'] == 'add_book':
+                from .editbooks import _add_to_db # circular import bleh
+                try:
+                    meta = i['meta']
+                    check = self.check_exists_book(meta.author, meta.title)
+                    results, db_book, error = _add_to_db(i['meta'], self)
+                except Exception as e:
+                    pass
+                pass
             self.queue.task_done()
 
 
@@ -384,7 +393,7 @@ class CalibreDB(threading.Thread):
         try:
             #engine = create_engine('sqlite:///{0}'.format(dbpath),
             self.engine = create_engine('sqlite://',
-                                   echo=False,
+                                   echo=True,
                                    isolation_level="SERIALIZABLE",
                                    connect_args={'check_same_thread': False})
             self.engine.execute("attach database '{}' as calibre;".format(dbpath))

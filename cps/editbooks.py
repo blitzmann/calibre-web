@@ -690,6 +690,147 @@ def identifier_list(to_save, book):
         result.append( db.Identifiers(to_save[val_key], type_value, book.id) )
     return result
 
+def _add_to_db(meta, calibre_db):
+    # create the function for sorting...
+    calibre_db.update_title_sort(config)
+    calibre_db.session.connection().connection.connection.create_function('uuid4', 0, lambda: str(uuid4()))
+
+    results= {
+        "exists": False,
+        "denied": False,
+        "failed_move": False,
+        "failed_move_cover": False
+    }
+    modif_date = False
+    title = meta.title
+    authr = meta.author
+
+    if title != _(u'Unknown') and authr != _(u'Unknown'):
+        entry = calibre_db.check_exists_book(authr, title)
+        if entry:
+            log.info("Uploaded book probably exists in library")
+            results["exists"] = entry
+
+    # handle authors
+    input_authors = authr.split('&')
+    # handle_authors(input_authors)
+    input_authors = list(map(lambda it: it.strip().replace(',', '|'), input_authors))
+    # we have all author names now
+    if input_authors == ['']:
+        input_authors = [_(u'Unknown')]  # prevent empty Author
+
+    sort_authors_list = list()
+    db_author = None
+    for inp in input_authors:
+        stored_author = calibre_db.session.query(db.Authors).filter(db.Authors.name == inp).first()
+        if not stored_author:
+            if not db_author:
+                db_author = db.Authors(inp, helper.get_sorted_author(inp), "")
+                calibre_db.session.add(db_author)
+                calibre_db.session.commit()
+            sort_author = helper.get_sorted_author(inp)
+        else:
+            if not db_author:
+                db_author = stored_author
+            sort_author = stored_author.sort
+        sort_authors_list.append(sort_author)  # helper.get_sorted_author(sort_author))
+    sort_authors = ' & '.join(sort_authors_list)
+
+    title_dir = helper.get_valid_filename(title)
+    author_dir = helper.get_valid_filename(db_author.name)
+    filepath = os.path.join(config.config_calibre_dir, author_dir, title_dir)
+    saved_filename = os.path.join(filepath, title_dir + meta.extension.lower())
+
+    # check if file path exists, otherwise create it, copy file to calibre path and delete temp file
+    if not os.path.exists(filepath):
+        try:
+            os.makedirs(filepath)
+        except OSError as e:
+            log.error("Failed to create path %s (Permission denied)", filepath)
+            results["denied"] = filepath
+            return results, None, None
+    try:
+        copyfile(meta.file_path, saved_filename)
+    except OSError as e:
+        log.error("Failed to move file %s: %s", saved_filename, e)
+        results["failed_move"] = (saved_filename, e)
+        return results, None, None
+    try:
+        os.unlink(meta.file_path)
+    except Exception as e:
+        log.error("Failed to delete temp file %s", meta.file_path)
+
+    if meta.cover is None:
+        has_cover = 0
+        copyfile(os.path.join(constants.STATIC_DIR, 'generic_cover.jpg'),
+                 os.path.join(filepath, "cover.jpg"))
+    else:
+        has_cover = 1
+
+    # combine path and normalize path from windows systems
+    path = os.path.join(author_dir, title_dir).replace('\\', '/')
+    # Calibre adds books with utc as timezone
+    db_book = db.Books(title, "", sort_authors, datetime.utcnow(), datetime(101, 1, 1),
+                       '1', datetime.utcnow(), path, has_cover, db_author, [], "")
+
+    modif_date |= modify_database_object(input_authors, db_book.authors, db.Authors, calibre_db.session,
+                                         'author')
+
+    # Add series_index to book
+    modif_date |= edit_book_series_index(meta.series_id, db_book)
+
+    # this will fail when calling from a different thread than the applicaiton lives on.
+    try:
+        # add languages
+        modif_date |= edit_book_languages(meta.languages, db_book, upload=True)
+    except:
+        pass
+
+    # handle tags
+    modif_date |= edit_book_tags(meta.tags, db_book)
+
+    # handle series
+    modif_date |= edit_book_series(meta.series, db_book)
+
+    # Add file to book
+    file_size = os.path.getsize(saved_filename)
+    db_data = db.Data(db_book, meta.extension.upper()[1:], file_size, title_dir)
+    db_book.data.append(db_data)
+    calibre_db.session.add(db_book)
+
+    # flush content, get db_book.id available
+    calibre_db.session.flush()
+
+    # Comments needs book id therfore only possiblw after flush
+    modif_date |= edit_book_comments(Markup(meta.description).unescape(), db_book)
+
+    book_id = db_book.id
+    title = db_book.title
+
+    error = helper.update_dir_stucture(book_id, config.config_calibre_dir, input_authors[0])
+
+    # move cover to final directory, including book id
+    if has_cover:
+        new_coverpath = os.path.join(config.config_calibre_dir, db_book.path, "cover.jpg")
+        try:
+            copyfile(meta.cover, new_coverpath)
+            os.unlink(meta.cover)
+        except OSError as e:
+            log.error("Failed to move cover file %s: %s", new_coverpath, e)
+            results["failed_move_cover"] = (new_coverpath, e)
+            return results, None, None
+
+    # save data to database, reread data
+    calibre_db.session.commit()
+    # calibre_db.setup_db(config, ub.app_DB_path)
+    # Reread book. It's important not to filter the result, as it could have language which hide it from
+    # current users view (tags are not stored/extracted from metadata and could also be limited)
+    # book = calibre_db.get_book(book_id)
+    if config.config_use_google_drive:
+        gdriveutils.updateGdriveCalibreFromLocal()
+
+    return results, db_book, error
+
 @editbook.route("/upload", methods=["GET", "POST"])
 @login_required_if_no_ano
 @upload_required
@@ -699,10 +840,7 @@ def upload():
     if request.method == 'POST' and 'btn-upload' in request.files:
         for requested_file in request.files.getlist("btn-upload"):
             try:
-                modif_date = False
-                # create the function for sorting...
-                calibre_db.update_title_sort(config)
-                calibre_db.session.connection().connection.connection.create_function('uuid4', 0, lambda: str(uuid4()))
+
 
                 # check if file extension is correct
                 if '.' in requested_file.filename:
@@ -724,140 +862,40 @@ def upload():
                     flash(_(u"File %(filename)s could not saved to temp dir",
                             filename= requested_file.filename), category="error")
                     return Response(json.dumps({"location": url_for("web.index")}), mimetype='application/json')
-                title = meta.title
-                authr = meta.author
 
-                if title != _(u'Unknown') and authr != _(u'Unknown'):
-                    entry = calibre_db.check_exists_book(authr, title)
-                    if entry:
-                        log.info("Uploaded book probably exists in library")
-                        flash(_(u"Uploaded book probably exists in the library, consider to change before upload new: ")
-                            + Markup(render_title_template('book_exists_flash.html', entry=entry)), category="warning")
+                results, db_book, error = _add_to_db(meta, calibre_db)
 
-                # handle authors
-                input_authors = authr.split('&')
-                # handle_authors(input_authors)
-                input_authors = list(map(lambda it: it.strip().replace(',', '|'), input_authors))
-                # we have all author names now
-                if input_authors == ['']:
-                    input_authors = [_(u'Unknown')]  # prevent empty Author
+                if results["exists"]:
+                    flash(_(u"Uploaded book probably exists in the library, consider to change before upload new: ")
+                          + Markup(render_title_template('book_exists_flash.html', entry=results["exists"])), category="warning")
 
-                sort_authors_list=list()
-                db_author = None
-                for inp in input_authors:
-                    stored_author = calibre_db.session.query(db.Authors).filter(db.Authors.name == inp).first()
-                    if not stored_author:
-                        if not db_author:
-                            db_author = db.Authors(inp, helper.get_sorted_author(inp), "")
-                            calibre_db.session.add(db_author)
-                            calibre_db.session.commit()
-                        sort_author = helper.get_sorted_author(inp)
-                    else:
-                        if not db_author:
-                            db_author = stored_author
-                        sort_author = stored_author.sort
-                    sort_authors_list.append(sort_author) # helper.get_sorted_author(sort_author))
-                sort_authors = ' & '.join(sort_authors_list)
+                if results["denied"]:
+                    flash(_(u"Failed to create path %(path)s (Permission denied).", path=results["denied"]), category="error")
+                    return Response(json.dumps({"location": url_for("web.index")}), mimetype='application/json')
 
-                title_dir = helper.get_valid_filename(title)
-                author_dir = helper.get_valid_filename(db_author.name)
-                filepath = os.path.join(config.config_calibre_dir, author_dir, title_dir)
-                saved_filename = os.path.join(filepath, title_dir + meta.extension.lower())
-
-                # check if file path exists, otherwise create it, copy file to calibre path and delete temp file
-                if not os.path.exists(filepath):
-                    try:
-                        os.makedirs(filepath)
-                    except OSError:
-                        log.error("Failed to create path %s (Permission denied)", filepath)
-                        flash(_(u"Failed to create path %(path)s (Permission denied).", path=filepath), category="error")
-                        return Response(json.dumps({"location": url_for("web.index")}), mimetype='application/json')
-                try:
-                    copyfile(meta.file_path, saved_filename)
-                    os.unlink(meta.file_path)
-                except OSError as e:
-                    log.error("Failed to move file %s: %s", saved_filename, e)
+                if results["failed_move"]:
+                    saved_filename, e = results["failed_move"]
                     flash(_(u"Failed to Move File %(file)s: %(error)s", file=saved_filename, error=e), category="error")
                     return Response(json.dumps({"location": url_for("web.index")}), mimetype='application/json')
 
-                if meta.cover is None:
-                    has_cover = 0
-                    copyfile(os.path.join(constants.STATIC_DIR, 'generic_cover.jpg'),
-                             os.path.join(filepath, "cover.jpg"))
-                else:
-                    has_cover = 1
+                if results["failed_move_cover"]:
+                    new_coverpath, e = results["failed_move_cover"]
+                    flash(_(u"Failed to Move Cover File %(file)s: %(error)s", file=new_coverpath, error=e), category="error")
 
-                # combine path and normalize path from windows systems
-                path = os.path.join(author_dir, title_dir).replace('\\', '/')
-                # Calibre adds books with utc as timezone
-                db_book = db.Books(title, "", sort_authors, datetime.utcnow(), datetime(101, 1, 1),
-                                   '1', datetime.utcnow(), path, has_cover, db_author, [], "")
-
-                modif_date |= modify_database_object(input_authors, db_book.authors, db.Authors, calibre_db.session,
-                                                     'author')
-
-                # Add series_index to book
-                modif_date |= edit_book_series_index(meta.series_id, db_book)
-
-                # add languages
-                modif_date |= edit_book_languages(meta.languages, db_book, upload=True)
-
-                # handle tags
-                modif_date |= edit_book_tags(meta.tags, db_book)
-
-                # handle series
-                modif_date |= edit_book_series(meta.series, db_book)
-
-                # Add file to book
-                file_size = os.path.getsize(saved_filename)
-                db_data = db.Data(db_book, meta.extension.upper()[1:], file_size, title_dir)
-                db_book.data.append(db_data)
-                calibre_db.session.add(db_book)
-
-                # flush content, get db_book.id available
-                calibre_db.session.flush()
-
-                # Comments needs book id therfore only possiblw after flush
-                modif_date |= edit_book_comments(Markup(meta.description).unescape(), db_book)
-
-                book_id = db_book.id
-                title = db_book.title
-
-                error = helper.update_dir_stucture(book_id, config.config_calibre_dir, input_authors[0])
-
-                # move cover to final directory, including book id
-                if has_cover:
-                    try:
-                        new_coverpath = os.path.join(config.config_calibre_dir, db_book.path, "cover.jpg")
-                        copyfile(meta.cover, new_coverpath)
-                        os.unlink(meta.cover)
-                    except OSError as e:
-                        log.error("Failed to move cover file %s: %s", new_coverpath, e)
-                        flash(_(u"Failed to Move Cover File %(file)s: %(error)s", file=new_coverpath,
-                                error=e),
-                              category="error")
-
-                # save data to database, reread data
-                calibre_db.session.commit()
-                #calibre_db.setup_db(config, ub.app_DB_path)
-                # Reread book. It's important not to filter the result, as it could have language which hide it from
-                # current users view (tags are not stored/extracted from metadata and could also be limited)
-                #book = calibre_db.get_book(book_id)
-                if config.config_use_google_drive:
-                    gdriveutils.updateGdriveCalibreFromLocal()
                 if error:
                     flash(error, category="error")
-                uploadText=_(u"File %(file)s uploaded", file=title)
-                worker.add_upload(current_user.nickname,
-                    "<a href=\"" + url_for('web.show_book', book_id=book_id) + "\">" + uploadText + "</a>")
 
-                if len(request.files.getlist("btn-upload")) < 2:
-                    if current_user.role_edit() or current_user.role_admin():
-                        resp = {"location": url_for('editbook.edit_book', book_id=book_id)}
-                        return Response(json.dumps(resp), mimetype='application/json')
-                    else:
-                        resp = {"location": url_for('web.show_book', book_id=book_id)}
-                        return Response(json.dumps(resp), mimetype='application/json')
+                uploadText = _(u"File %(file)s uploaded", file=db_book.title)
+                worker.add_upload(current_user.nickname,
+                    "<a href=\"" + url_for('web.show_book', book_id=db_book.id) + "\">" + uploadText + "</a>")
+
+                # if len(request.files.getlist("btn-upload")) < 2:
+                #     if current_user.role_edit() or current_user.role_admin():
+                #         resp = {"location": url_for('editbook.edit_book', book_id=db_book.id)}
+                #         return Response(json.dumps(resp), mimetype='application/json')
+                #     else:
+                #         resp = {"location": url_for('web.show_book', book_id=db_book.id)}
+                #         return Response(json.dumps(resp), mimetype='application/json')
             except OperationalError as e:
                 calibre_db.session.rollback()
                 log.error("Database error: %s", e)

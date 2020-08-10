@@ -26,6 +26,13 @@ import time
 import math
 import threading
 import requests
+import hashlib
+from tempfile import gettempdir
+from urllib.parse import urlparse
+
+from .constants import BookMeta
+
+
 try:
     import queue
 except ImportError:
@@ -55,8 +62,11 @@ from . import calibre_db, db
 from . import logger, config
 from .subproc_wrapper import process_open
 from . import gdriveutils
+from .uploader import process
 
 log = logger.create()
+
+BUF_SIZE = 65536  # lets read stuff in 64kb chunks!
 
 chunksize = 8192
 # task 'status' consts
@@ -70,6 +80,7 @@ TASK_CONVERT = 2
 TASK_UPLOAD = 3
 TASK_CONVERT_ANY = 4
 TASK_HB_DOWNLOAD = 5
+TASK_HB_LINK = 6
 
 RET_FAIL = 0
 RET_SUCCESS = 1
@@ -201,7 +212,7 @@ class WorkerThread(threading.Thread):
         calibre_db.add_queue(self.db_queue)
         self.doLock = threading.Lock()
 
-    # Main thread loop starting the different tasks
+    # Main thread loop starting the different tasksdb_queue
     def run(self):
         main_thread = _get_main_thread()
         while main_thread.is_alive():
@@ -218,6 +229,8 @@ class WorkerThread(threading.Thread):
                         self._convert_any_format()
                     if self.queue[index]['taskType'] == TASK_HB_DOWNLOAD:
                         self._download_hb()
+                    if self.queue[index]['taskType'] == TASK_HB_LINK:
+                        self._link_hb()
                     # TASK_UPLOAD is handled implicitly
                     self.doLock.acquire()
                     self.current += 1
@@ -240,7 +253,8 @@ class WorkerThread(threading.Thread):
 
     def _delete_completed_tasks(self):
         for index, task in reversed(list(enumerate(self.UIqueue))):
-            if task['progress'] == "100 %":
+            # Check if status is in any of the "Completed" things
+            if task['stat'] in (STAT_FINISH_SUCCESS, STAT_FAIL):
                 # delete tasks
                 self.queue.pop(index)
                 self.UIqueue.pop(index)
@@ -264,6 +278,7 @@ class WorkerThread(threading.Thread):
 
     def _download_hb(self):
         # convert book, and upload in case of google drive
+        import os
         self.doLock.acquire()
 
         index = self.current
@@ -273,21 +288,25 @@ class WorkerThread(threading.Thread):
         self.UIqueue[index]['formStarttime'] = self.queue[index]['starttime']
         curr_task = self.queue[index]['taskType']
 
-        url = self.queue[index]['url']
-        auth = self.queue[index]['auth']
+        dl = self.queue[index]['download_info']
 
-        headers={
-            'Accept': 'application/json',
-            'Accept-Charset': 'utf-8',
-            'User-Agent': 'calibre-web-hb-downloader',
-        }
-        cookies = {'_simpleauth_sess': 'eyJ1c2VyX2lkIjo2NDA5ODYyMjQ1Mzg0MTkyLCJpZCI6Ik5hNXpLSGhPN0wiLCJhdXRoX3RpbWUiOjE1Nzk2NDE3Nzl9|1596862507|01a2a06cf464a9fea5195872247c2e5d67479c00'}
+        tmp_dir = os.path.join(gettempdir(), 'calibre_web')
 
-        orders = requests.get('https://www.humblebundle.com/api/v1/user/order?ajax=true', headers=headers, cookies=cookies)
-        print(orders.json())
-        # todo: filename will represent the file being downloaded...?
-        with open('whoops.epub', 'wb') as f:
-            response = requests.get(url, stream=True)
+        if not os.path.isdir(tmp_dir):
+            os.mkdir(tmp_dir)
+
+        tmp_file_path = os.path.join(tmp_dir, dl["sha1"])
+        log.debug("Temporary file: %s", tmp_file_path)
+
+        url = dl["url"]["web"]
+        a = urlparse(url)
+        filename = os.path.basename(a.path)
+        filename_root, file_extension = os.path.splitext(filename)
+
+        # todo: filename should be in temp directory... unsure what it should be called... look into the upload route to
+        # determine how this happens
+        with open(tmp_file_path, 'wb') as f:
+            response = requests.get(dl["url"]["web"], stream=True)
             total = response.headers.get('content-length')
 
             if total is None:
@@ -299,8 +318,109 @@ class WorkerThread(threading.Thread):
                     downloaded += len(data)
                     f.write(data)
                     self.UIqueue[index]['progress'] = '{} %'.format(math.floor((downloaded / total) * 100))
+            pass
+
+        sha1 = hashlib.sha1()
+
+        with open(tmp_file_path, 'rb') as f:
+            while True:
+                data = f.read(BUF_SIZE)
+                if not data:
+                    break
+                sha1.update(data)
+
+        if sha1.hexdigest() != dl["sha1"]:
+            return self._handleError("SHA1 integrity check failed after download")
+
+        self.queue[index]["results"] = {
+            "success": True, # todo: don't hardcode this
+            "filepath": tmp_file_path,
+            "filename_root": filename_root,
+            "file_extension": file_extension
+        }
 
         self._handleSuccess()
+
+        # it's technically done, but the link portion needs these around still. We set these to started to avoid
+        # the cleanup process from cleaning them up
+
+        self.UIqueue[index]['stat'] = STAT_STARTED
+
+    def _link_hb(self):
+        from .editbooks import _add_to_db # importing it here prevents a circular import issue
+        # convert book, and upload in case of google drive
+        self.doLock.acquire()
+
+        index = self.current
+        self.doLock.release()
+        self.UIqueue[index]['stat'] = STAT_STARTED
+        self.queue[index]['starttime'] = datetime.now()
+        self.UIqueue[index]['formStarttime'] = self.queue[index]['starttime']
+        curr_task = self.queue[index]['taskType']
+
+        task_ids = self.queue[index]['tasks']
+        bundle_name = self.queue[index]['bundle_name']
+        product_name = self.queue[index]['product_name']
+        #
+        # # se tup temp data
+        # tmp_dir = os.path.join(gettempdir(), 'calibre_web')
+        #
+        # if not os.path.isdir(tmp_dir):
+        #     os.mkdir(tmp_dir)
+        #
+        # filename = uploadfile.filename
+        # filename_root, file_extension = os.path.splitext(filename)
+        # md5 = hashlib.md5(filename.encode('utf-8')).hexdigest()
+        # tmp_file_path = os.path.join(tmp_dir, md5)
+        # log.debug("Temporary file: %s", tmp_file_path)
+        # uploadfile.save(tmp_file_path)
+        # return process(tmp_file_path, filename_root, file_extension, rarExcecutable)
+
+        # find all the objects with these tasks
+        dl_tasks = [x for x in self.queue if x.get("id", None) in task_ids]
+
+        processed = []
+        # we loop through the DL items start assigning their meta data to the base meta object
+        for task in dl_tasks:
+            processed.append(process(
+                task["results"]["filepath"],
+                task["results"]["filename_root"],
+                task["results"]["file_extension"],
+                ''  # todo: figure this guy out
+            ))
+
+        # create a new BaseMeta tuple that holds the final values that we will use
+        meta = BookMeta(
+            file_path=processed[0].file_path,
+            extension=processed[0].extension,
+            # We know the title from the bundle itself. Hardcode it here to avoid issue where we can't get any metadata, and thus don't know what book this is
+            title=product_name,
+            author=next((meta.author for meta in processed if meta.author != _(u'Unknown')), None) or _(u'Unknown'),
+            cover=next((meta.cover for meta in processed if meta.cover is not None), None),
+            description=next((meta.description for meta in processed if meta.description not in (None, "")), None) or "",
+            tags=next((meta.tags for meta in processed if meta.tags not in (None, "")), None) or "",
+            series=next((meta.series for meta in processed if meta.series not in (None, "")), None) or "",
+            series_id=next((meta.series_id for meta in processed if meta.series_id not in (None, "")), None) or "",
+            languages=next((meta.languages for meta in processed if meta.languages not in (None, "")), None) or ""
+        )
+
+        task = {'task': 'add_book', 'meta': meta, 'id': self.UIqueue[index]["id"]}
+        self.db_queue.put(task)
+        # todo: if there's an error, call back to this thread with details using the id
+
+        # try:
+        #     results, db_book, error = _add_to_db(base, calibre_db)
+        # except Exception as e:
+        #     return self._handleError(str(e))
+        #     pass
+
+        # if everything is successfull, set the download tasks to Success
+        for ui in self.UIqueue:
+            if ui.get("id", None) in task_ids:
+                ui['stat'] = STAT_FINISH_SUCCESS
+
+        self._handleSuccess()
+
 
     def _convert_any_format(self):
         # convert book, and upload in case of google drive
@@ -493,20 +613,59 @@ class WorkerThread(threading.Thread):
         self.last=len(self.queue)
         self.doLock.release()
 
-    def add_hb_download(self, user_name, url, auth):
+
+    def add_hb_download(self, user_name, bundle_name, product_name, download_info):
         self.doLock.acquire()
-        if self.last >= 20:
-            self._delete_completed_tasks()
         # progress, runtime, and status = 0
+
+        task_ids = []
+
+        for x in download_info:
+            # todo: this will have to add multiple tasks: one for each download. _But_ the first one will have to be a
+            # "new" book, whereas the subsequent ones will have to be adding a format to it.
+            self.id += 1
+
+            self.queue.append({'taskType': TASK_HB_DOWNLOAD, 'download_info': x, "id": self.id})
+            self.UIqueue.append({
+                'user': user_name,
+                'formStarttime': '',
+                'progress': " 0 %",
+                'taskMess': 'Downloading {book_title} ({format}) [{bundle_name}]'.format(
+                    book_title=product_name, format=x["name"], bundle_name=bundle_name ),
+                'runtime': '0 s',
+                'stat': STAT_WAITING,
+                'id': self.id,
+                'taskType': TASK_HB_DOWNLOAD
+            })
+            task_ids.append(self.id)
+            self.last=len(self.queue)
+
+        # Here we create a special task that takes the download tasks and gathers the meta about them and links them under one book
         self.id += 1
-        task = TASK_HB_DOWNLOAD
 
-        self.queue.append({'url':url, 'auth':auth, 'taskType': task, 'settings': {}})
-        self.UIqueue.append({'user': user_name, 'formStarttime': '', 'progress': " 0 %", 'taskMess': 'Downlaoding HB booko WHAT.epub',
-                             'runtime': '0 s', 'stat': STAT_WAITING,'id': self.id, 'taskType': task } )
+        self.queue.append({
+            'taskType': TASK_HB_LINK,
+            'tasks': task_ids,
+            "bundle_name": bundle_name,
+            "product_name": product_name
+        })
 
-        self.last=len(self.queue)
+        self.UIqueue.append({
+            'user': user_name,
+            'formStarttime': '',
+            'progress': " 0 %",
+            'taskMess': 'Processing {book_title} [{bundle_name}]'.format(
+                book_title=product_name, bundle_name=bundle_name),
+            'runtime': '0 s',
+            'stat': STAT_WAITING,
+            'id': self.id,
+            'taskType': TASK_HB_LINK
+        })
+
+        self.last = len(self.queue)
+
         self.doLock.release()
+
 
     def add_email(self, subject, filepath, attachment, settings, recipient, user_name, taskMessage,
                   text):
@@ -655,8 +814,8 @@ def add_convert(file_path, bookid, user_name, taskMessage, settings, kindle_mail
     return _worker.add_convert(file_path, bookid, user_name, taskMessage, settings, kindle_mail)
 
 
-def add_hb_download(user_name, url, auth):
-    return _worker.add_hb_download(user_name, url, auth)
+def add_hb_download(user_name, bundle_name, product_name, download_info):
+    return _worker.add_hb_download(user_name, bundle_name, product_name, download_info)
 
 _worker = WorkerThread()
 _worker.start()
