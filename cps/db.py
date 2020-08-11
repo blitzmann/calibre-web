@@ -376,7 +376,7 @@ class CalibreDB(threading.Thread):
             config.invalidate()
             return False
 
-        dbpath = os.path.join(config.config_calibre_dir, "metadata.db")
+        dbpath = os.path.abspath(os.path.join(config.config_calibre_dir, "metadata.db"))
         if not os.path.exists(dbpath):
             config.invalidate()
             return False
