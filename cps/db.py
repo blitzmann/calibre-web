@@ -40,6 +40,7 @@ from flask_babel import gettext as _
 
 from . import logger, ub, isoLanguages
 from .pagination import Pagination
+import random, string
 
 try:
     import unidecode
@@ -361,6 +362,20 @@ class CalibreDB(threading.Thread):
                     self.log.error("Database error: %s", e)
                     # self._handleError(_(u"Database error: %(error)s.", error=e))
                     # return
+            if i['task'] == 'add_random_author':
+                print("============ ADDING RANDOM AUTHOR ============")
+                x = ''.join(random.choices(string.ascii_letters + string.digits, k=16))
+                try:
+                    db_author = Authors(x, x, "")
+                    self.session.add(db_author)
+                    self.session.commit()
+                    print(db_author)
+                except OperationalError as e:
+                    import traceback
+                    tb = traceback.format_exc()
+                    print(e, tb)
+                    self.session.rollback()
+                    self.log.error("Database error: %s", e)
             self.queue.task_done()
 
 

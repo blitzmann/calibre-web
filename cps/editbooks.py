@@ -27,7 +27,7 @@ import json
 from shutil import copyfile
 from uuid import uuid4
 
-from flask import Blueprint, request, flash, redirect, url_for, abort, Markup, Response
+from flask import Blueprint, request, flash, redirect, url_for, abort, Markup, Response, jsonify
 from flask_babel import gettext as _
 from flask_login import current_user, login_required
 from sqlalchemy.exc import OperationalError
@@ -893,3 +893,21 @@ def convert_bookformat(book_id):
     else:
         flash(_(u"There was an error converting this book: %(res)s", res=rtn), category="error")
     return redirect(url_for('editbook.edit_book', book_id=book_id))
+
+
+@editbook.route("/api/rand_auth", methods=['POST'])
+def do_rand_auth():
+    worker.add_random_author('TEST USERNAME!')
+    return jsonify({})
+
+@editbook.route("/api/rand_auth_no_worker", methods=['POST'])
+def do_rand_auth_no_workers():
+    import random, string
+    x = ''.join(random.choices(string.ascii_letters + string.digits, k=16))
+
+    db_author = db.Authors(x, x, "")
+    calibre_db.session.add(db_author)
+    calibre_db.session.commit()
+    print(db_author)
+
+    return jsonify({})
