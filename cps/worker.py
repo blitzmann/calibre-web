@@ -81,6 +81,7 @@ TASK_UPLOAD = 3
 TASK_CONVERT_ANY = 4
 TASK_HB_DOWNLOAD = 5
 TASK_HB_LINK = 6
+TASK_TEST = 7
 
 RET_FAIL = 0
 RET_SUCCESS = 1
@@ -231,6 +232,9 @@ class WorkerThread(threading.Thread):
                         self._download_hb()
                     if self.queue[index]['taskType'] == TASK_HB_LINK:
                         self._link_hb()
+                    if self.queue[index]['taskType'] == TASK_TEST:
+                        self.format_test()
+
                     # TASK_UPLOAD is handled implicitly
                     self.doLock.acquire()
                     self.current += 1
@@ -420,6 +424,15 @@ class WorkerThread(threading.Thread):
                 ui['stat'] = STAT_FINISH_SUCCESS
 
         self._handleSuccess()
+
+
+    def format_test(self):
+        new_format = db.Data(name='Black Women in Science - Kimberly Brown Pellum, PhD',
+                             book_format='AZW3',
+                             book=1,
+                             uncompressed_size=2664193)
+        task = {'task': 'add_format', 'id': 1, 'format': new_format}
+        self.db_queue.put(task)
 
 
     def _convert_any_format(self):
@@ -667,6 +680,20 @@ class WorkerThread(threading.Thread):
         self.doLock.release()
 
 
+    def add_format_test(self, user_name):
+        # if more than 20 entries in the list, clean the list
+        self.doLock.acquire()
+        if self.last >= 20:
+            self._delete_completed_tasks()
+        # progress, runtime, and status = 0
+        self.id += 1
+        self.queue.append({'starttime': 0, 'taskType': TASK_TEST})
+        self.UIqueue.append({'user': user_name, 'formStarttime': '', 'progress': " 0 %", 'taskMess': "Testing format thing",
+                             'runtime': '0 s', 'stat': STAT_WAITING,'id': self.id, 'taskType': TASK_TEST })
+        self.last=len(self.queue)
+        self.doLock.release()
+
+
     def add_email(self, subject, filepath, attachment, settings, recipient, user_name, taskMessage,
                   text):
         # if more than 20 entries in the list, clean the list
@@ -816,6 +843,9 @@ def add_convert(file_path, bookid, user_name, taskMessage, settings, kindle_mail
 
 def add_hb_download(user_name, bundle_name, product_name, download_info):
     return _worker.add_hb_download(user_name, bundle_name, product_name, download_info)
+
+def add_format_test(user_name):
+    return _worker.add_format_test(user_name)
 
 _worker = WorkerThread()
 _worker.start()

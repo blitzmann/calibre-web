@@ -691,8 +691,6 @@ def identifier_list(to_save, book):
     return result
 
 def _add_to_db(meta, calibre_db):
-    # create the function for sorting...
-    calibre_db.update_title_sort(config)
     calibre_db.session.connection().connection.connection.create_function('uuid4', 0, lambda: str(uuid4()))
 
     results= {
@@ -737,6 +735,7 @@ def _add_to_db(meta, calibre_db):
     sort_authors = ' & '.join(sort_authors_list)
 
     title_dir = helper.get_valid_filename(title)
+
     author_dir = helper.get_valid_filename(db_author.name)
     filepath = os.path.join(config.config_calibre_dir, author_dir, title_dir)
     saved_filename = os.path.join(filepath, title_dir + meta.extension.lower())
@@ -783,8 +782,8 @@ def _add_to_db(meta, calibre_db):
     try:
         # add languages
         modif_date |= edit_book_languages(meta.languages, db_book, upload=True)
-    except:
-        pass
+    except Exception as e:
+        log.error("Failed to modify languages for book: %s. %s", db_book, e)
 
     # handle tags
     modif_date |= edit_book_tags(meta.tags, db_book)
@@ -840,7 +839,8 @@ def upload():
     if request.method == 'POST' and 'btn-upload' in request.files:
         for requested_file in request.files.getlist("btn-upload"):
             try:
-
+                # create the function for sorting...
+                calibre_db.update_title_sort(config)
 
                 # check if file extension is correct
                 if '.' in requested_file.filename:

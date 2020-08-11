@@ -25,6 +25,7 @@ import ast
 import json
 from datetime import datetime
 import threading
+from uuid import uuid4
 
 from sqlalchemy import create_engine
 from sqlalchemy import Table, Column, ForeignKey, CheckConstraint
@@ -358,17 +359,27 @@ class CalibreDB(threading.Thread):
                     self.session.commit()
                 except OperationalError as e:
                     self.session.rollback()
+                    print(e)
                     self.log.error("Database error: %s", e)
                     # self._handleError(_(u"Database error: %(error)s.", error=e))
                     # return
             if i['task'] == 'add_book':
                 from .editbooks import _add_to_db # circular import bleh
                 try:
-                    meta = i['meta']
-                    check = self.check_exists_book(meta.author, meta.title)
                     results, db_book, error = _add_to_db(i['meta'], self)
+                    self.session.commit()
+                    print ("IT WORKED!")
+                except OperationalError as e:
+                    self.session.rollback()
+
+                    import traceback
+                    tb = traceback.format_exc()
+                    print(e, tb)
+                    self.log.error("Database error: %s", e)
+
                 except Exception as e:
-                    pass
+                    print("BROKE!")
+                    print(e)
                 pass
             self.queue.task_done()
 
@@ -393,7 +404,7 @@ class CalibreDB(threading.Thread):
         try:
             #engine = create_engine('sqlite:///{0}'.format(dbpath),
             self.engine = create_engine('sqlite://',
-                                   echo=True,
+                                   echo=False,
                                    isolation_level="SERIALIZABLE",
                                    connect_args={'check_same_thread': False})
             self.engine.execute("attach database '{}' as calibre;".format(dbpath))

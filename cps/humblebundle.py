@@ -62,7 +62,7 @@ def get_hb_orders():
         '_simpleauth_sess': data["auth"]
     }
 
-    orders = requests.get('https://www.humblebundle.com/api/v1/user/order?ajax=true', headers=headers, cookies=cookies).json()
+    # orders = requests.get('https://www.humblebundle.com/api/v1/user/order?ajax=true', headers=headers, cookies=cookies).json()
     orders = [{"gamekey":"3w74zkZYEK3ncyhY"}] # testing
 
     ret = []
@@ -190,3 +190,10 @@ def get_hb_orders():
             worker.add_hb_download('TEST USERNAME!', bundle["name"], product["name"], product["downloads"])
 
     return jsonify(ret)
+
+
+
+@humble.route("/hb/format_test", methods=['POST'])
+def do_format_test():
+    worker.add_format_test('TEST USERNAME!')
+    return jsonify({})
