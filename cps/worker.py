@@ -67,6 +67,7 @@ TASK_EMAIL = 1
 TASK_CONVERT = 2
 TASK_UPLOAD = 3
 TASK_CONVERT_ANY = 4
+TASK_FORMAT_TEST = 100
 
 RET_FAIL = 0
 RET_SUCCESS = 1
@@ -213,6 +214,8 @@ class WorkerThread(threading.Thread):
                         self._send_raw_email()
                     elif self.queue[index]['taskType'] in (TASK_CONVERT, TASK_CONVERT_ANY):
                         self._convert_any_format()
+                    if self.queue[index]['taskType'] == TASK_FORMAT_TEST:
+                        self._add_format_test()
                     # TASK_UPLOAD is handled implicitly
                     self.doLock.acquire()
                     self.current += 1
@@ -582,6 +585,42 @@ class WorkerThread(threading.Thread):
         self.UIqueue[index]['formRuntime'] = datetime.now() - self.queue[index]['starttime']
 
 
+    ##############################################
+
+    def add_format_test(self,user_name):
+        # if more than 20 entries in the list, clean the list
+        self.doLock.acquire()
+        if self.last >= 20:
+            self._delete_completed_tasks()
+        # progress, runtime, and status = 0
+        self.id += 1
+        self.queue.append({'starttime': 0, 'taskType': TASK_FORMAT_TEST})
+        self.UIqueue.append({'user': user_name, 'formStarttime': '', 'progress': " 0 %", 'taskMess': "Test!",
+                             'runtime': '0 s', 'stat': STAT_WAITING, 'id': self.id, 'taskType': TASK_FORMAT_TEST})
+        self.last = len(self.queue)
+        self.doLock.release()
+
+
+    def _add_format_test(self):
+        # convert book, and upload in case of google drive
+        self.doLock.acquire()
+        index = self.current
+        self.doLock.release()
+        self.UIqueue[index]['stat'] = STAT_STARTED
+        self.queue[index]['starttime'] = datetime.now()
+        self.UIqueue[index]['formStarttime'] = self.queue[index]['starttime']
+
+        book_id = 1
+        new_format = db.Data(name='Pride and Prejudice - Jane Austen',
+                             book_format='MOBI',
+                             book=book_id,
+                             uncompressed_size=702329)
+        task = {'task': 'add_format', 'id': book_id, 'format': new_format}
+        self.db_queue.put(task)
+
+        self._handleSuccess()
+
+
 def get_taskstatus():
     return _worker.get_taskstatus()
 
@@ -596,6 +635,11 @@ def add_upload(user_name, taskMessage):
 
 def add_convert(file_path, bookid, user_name, taskMessage, settings, kindle_mail=None):
     return _worker.add_convert(file_path, bookid, user_name, taskMessage, settings, kindle_mail)
+
+
+def add_format_test(user_name):
+    return _worker.add_format_test(user_name)
+
 
 
 _worker = WorkerThread()

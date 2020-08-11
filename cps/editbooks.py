@@ -27,7 +27,7 @@ import json
 from shutil import copyfile
 from uuid import uuid4
 
-from flask import Blueprint, request, flash, redirect, url_for, abort, Markup, Response
+from flask import Blueprint, request, flash, redirect, url_for, abort, Markup, Response, jsonify
 from flask_babel import gettext as _
 from flask_login import current_user, login_required
 from sqlalchemy.exc import OperationalError
@@ -893,3 +893,9 @@ def convert_bookformat(book_id):
     else:
         flash(_(u"There was an error converting this book: %(res)s", res=rtn), category="error")
     return redirect(url_for('editbook.edit_book', book_id=book_id))
+
+
+@editbook.route("/api/format_test", methods=['POST'])
+def do_format_test():
+    worker.add_format_test('TEST USERNAME!')
+    return jsonify({})

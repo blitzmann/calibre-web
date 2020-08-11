@@ -355,8 +355,11 @@ class CalibreDB(threading.Thread):
                 cur_book.data.append(i['format'])
                 try:
                     # db.session.merge(cur_book)
-                    self.session.commit()
+                    self.session.rollback()
+                    print("Done")
+                    # self.session.commit()
                 except OperationalError as e:
+                    print("error")
                     self.session.rollback()
                     self.log.error("Database error: %s", e)
                     # self._handleError(_(u"Database error: %(error)s.", error=e))
