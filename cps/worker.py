@@ -223,12 +223,12 @@ class WorkerThread(threading.Thread):
                 self.doLock.acquire()
                 if self.current != self.last:
                     index = self.current
+                    log.info(index)
+                    log.info(len(self.queue))
                     self.doLock.release()
                     if self.queue[index]['taskType'] == TASK_EMAIL:
                         self._send_raw_email()
-                    if self.queue[index]['taskType'] == TASK_CONVERT:
-                        self._convert_any_format()
-                    if self.queue[index]['taskType'] == TASK_CONVERT_ANY:
+                    elif self.queue[index]['taskType'] in (TASK_CONVERT, TASK_CONVERT_ANY):
                         self._convert_any_format()
                     if self.queue[index]['taskType'] == TASK_HB_DOWNLOAD:
                         self._download_hb()
@@ -518,7 +518,8 @@ class WorkerThread(threading.Thread):
                 self.add_email(self.queue[index]['settings']['subject'], self.queue[index]['path'],
                                 filename, self.queue[index]['settings'], self.queue[index]['kindle'],
                                 self.UIqueue[index]['user'], self.queue[index]['title'],
-                                self.queue[index]['settings']['body'])
+                                self.queue[index]['settings']['body'], internal=True)
+
 
     def _convert_ebook_format(self):
         error_message = None
@@ -759,11 +760,13 @@ class WorkerThread(threading.Thread):
 
 
     def add_email(self, subject, filepath, attachment, settings, recipient, user_name, taskMessage,
-                  text):
+                  text, internal=False):
         # if more than 20 entries in the list, clean the list
         self.doLock.acquire()
         if self.last >= 20:
             self._delete_completed_tasks()
+            if internal:
+                self.current-= 1
         # progress, runtime, and status = 0
         self.id += 1
         self.queue.append({'subject':subject, 'attachment':attachment, 'filepath':filepath,

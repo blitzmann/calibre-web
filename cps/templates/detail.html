@@ -66,7 +66,7 @@
                     </ul>
               </div>
             {% endif %}
-            {% if audioentries|length > 0 %}
+            {% if audioentries|length > 0 and g.user.role_viewer() %}
               <div class="btn-group" role="group">
                 <button id="listen-in-browser" type="button" class="btn btn-primary dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
                   <span class="glyphicon glyphicon-music"></span> {{_('Listen in Browser')}}
@@ -105,7 +105,7 @@
             <span class="glyphicon glyphicon-star good"></span>
             {% if loop.last and loop.index < 5 %}
               {% for numer in range(5 - loop.index) %}
-                <span class="glyphicon glyphicon-star"></span>
+                <span class="glyphicon glyphicon-star-empty"></span>
               {% endfor %}
             {% endif %}
           {% endfor %}
@@ -174,7 +174,7 @@
             {{ c.name }}:
             {% for column in entry['custom_column_' ~ c.id] %}
               {% if c.datatype == 'rating' %}
-                {{ '%d' % (column.value / 2) }}
+                {{ '%d' % (column.value / 2) }}{% if ((column.value /2) % 1) != 0 %}{{ '.%d' % (((column.value /2) % 1)*10) }} {% endif %}
               {% else %}
                 {% if c.datatype == 'bool' %}
                   {% if column.value == true %}
@@ -183,7 +183,11 @@
                     <span class="glyphicon glyphicon-remove"></span>
                   {% endif %}
                 {% else %}
+                {% if c.datatype == 'float' %}
+                  {{ '%d' % (column.value) }}{% if (column.value % 1) != 0 %}{{ '.%d' % ((column.value % 1)*100) }} {% endif %}
+                {% else %}
                   {{ column.value }}
+                {% endif %}
                 {% endif %}
               {% endif %}
             {% endfor %}

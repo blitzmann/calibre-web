@@ -102,7 +102,6 @@ class _Settings(_Base):
 
     config_kobo_proxy = Column(Boolean, default=False)
 
-
     config_ldap_provider_url = Column(String, default='example.org')
     config_ldap_port = Column(SmallInteger, default=389)
     config_ldap_authentication = Column(SmallInteger, default=constants.LDAP_AUTH_SIMPLE)
@@ -215,20 +214,20 @@ class _ConfigSQL(object):
         return self.show_element_new_user(constants.DETAIL_RANDOM)
 
     def list_denied_tags(self):
-        mct = self.config_denied_tags.split(",")
-        return [t.strip() for t in mct]
+        mct = self.config_denied_tags or ""
+        return [t.strip() for t in mct.split(",")]
 
     def list_allowed_tags(self):
-        mct = self.config_allowed_tags.split(",")
-        return [t.strip() for t in mct]
+        mct = self.config_allowed_tags or ""
+        return [t.strip() for t in mct.split(",")]
 
     def list_denied_column_values(self):
-        mct = self.config_denied_column_value.split(",")
-        return [t.strip() for t in mct]
+        mct = self.config_denied_column_value or ""
+        return [t.strip() for t in mct.split(",")]
 
     def list_allowed_column_values(self):
-        mct = self.config_allowed_column_value.split(",")
-        return [t.strip() for t in mct]
+        mct = self.config_allowed_column_value or ""
+        return [t.strip() for t in mct.split(",")]
 
     def get_log_level(self):
         return logger.get_level_name(self.config_log_level)
@@ -361,10 +360,10 @@ def _migrate_table(session, orm_class):
 
 def autodetect_calibre_binary():
     if sys.platform == "win32":
-        calibre_path = ["C:\\program files\calibre\ebook-convert.exe",
-                        "C:\\program files(x86)\calibre\ebook-convert.exe",
-                        "C:\\program files(x86)\calibre2\ebook-convert.exe",
-                        "C:\\program files\calibre2\ebook-convert.exe"]
+        calibre_path = ["C:\\program files\\calibre\\ebook-convert.exe",
+                        "C:\\program files(x86)\\calibre\\ebook-convert.exe",
+                        "C:\\program files(x86)\\calibre2\\ebook-convert.exe",
+                        "C:\\program files\\calibre2\\ebook-convert.exe"]
     else:
         calibre_path = ["/opt/calibre/ebook-convert"]
     for element in calibre_path:

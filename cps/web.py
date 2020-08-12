@@ -36,7 +36,7 @@ from babel.core import UnknownLocaleError
 from flask import Blueprint
 from flask import render_template, request, redirect, send_from_directory, make_response, g, flash, abort, url_for
 from flask_babel import gettext as _
-from flask_login import login_user, logout_user, login_required, current_user
+from flask_login import login_user, logout_user, login_required, current_user, confirm_login
 from sqlalchemy.exc import IntegrityError, InvalidRequestError, OperationalError
 from sqlalchemy.sql.expression import text, func, true, false, not_, and_, or_
 from werkzeug.exceptions import default_exceptions, InternalServerError
@@ -77,11 +77,6 @@ try:
 except ImportError:
     pass  # We're not using Python 3
 
-#try:
-#    import rarfile
-#    feature_support['rar'] = True
-#except ImportError:
-#    feature_support['rar'] = False
 
 try:
     from natsort import natsorted as sort
@@ -299,6 +294,8 @@ def render_title_template(*args, **kwargs):
 
 @web.before_app_request
 def before_request():
+    if current_user.is_authenticated:
+        confirm_login()
     g.user = current_user
     g.allow_registration = config.config_public_reg
     g.allow_anonymous = config.config_anonbrowse
@@ -449,7 +446,7 @@ def toggle_read(book_id):
                 new_cc = cc_class(value=1, book=book_id)
                 calibre_db.session.add(new_cc)
                 calibre_db.session.commit()
-        except KeyError:
+        except (KeyError, AttributeError):
             log.error(u"Custom Column No.%d is not exisiting in calibre database", config.config_read_column)
         except OperationalError as e:
             calibre_db.session.rollback()
@@ -986,7 +983,7 @@ def get_tasks_status():
 
 @app.route("/reconnect")
 def reconnect():
-    db.reconnect_db(config, ub.app_DB_path)
+    calibre_db.reconnect_db(config, ub.app_DB_path)
     return json.dumps({})
 
 
@@ -1145,7 +1142,7 @@ def advanced_search():
                         db.cc_classes[c.id].value == custom_query))
                 elif c.datatype == 'rating':
                     q = q.filter(getattr(db.Books, 'custom_column_' + str(c.id)).any(
-                        db.cc_classes[c.id].value == int(custom_query) * 2))
+                        db.cc_classes[c.id].value == int(float(custom_query) * 2)))
                 else:
                     q = q.filter(getattr(db.Books, 'custom_column_' + str(c.id)).any(
                         func.lower(db.cc_classes[c.id].value).ilike("%" + custom_query + "%")))
@@ -1207,7 +1204,7 @@ def render_read_books(page, are_read, as_xml=False, order=None, *args, **kwargs)
                                                                     db_filter,
                                                                     order,
                                                                     db.cc_classes[config.config_read_column])
-        except KeyError:
+        except (KeyError, AttributeError):
             log.error("Custom Column No.%d is not existing in calibre database", config.config_read_column)
             if not as_xml:
                 flash(_("Custom Column No.%(column)d is not existing in calibre database",
@@ -1259,6 +1256,9 @@ def render_archived_books(page, order):
 def get_cover(book_id):
     return get_book_cover(book_id)
 
+@web.route("/robots.txt")
+def get_robots():
+    return send_from_directory(constants.STATIC_DIR, "robots.txt")
 
 @web.route("/show/<int:book_id>/<book_format>", defaults={'anyname': 'None'})
 @web.route("/show/<int:book_id>/<book_format>/<anyname>")
@@ -1392,14 +1392,14 @@ def login():
         if config.config_login_type == constants.LOGIN_LDAP and services.ldap and user and form['password'] != "":
             login_result, error = services.ldap.bind_user(form['username'], form['password'])
             if login_result:
-                login_user(user, remember=True)
+                login_user(user, remember=bool(form.get('remember_me')))
                 log.debug(u"You are now logged in as: '%s'", user.nickname)
                 flash(_(u"you are now logged in as: '%(nickname)s'", nickname=user.nickname),
                       category="success")
                 return redirect_back(url_for("web.index"))
             elif login_result is None and user and check_password_hash(str(user.password), form['password']) \
                 and user.nickname != "Guest":
-                login_user(user, remember=True)
+                login_user(user, remember=bool(form.get('remember_me')))
                 log.info("Local Fallback Login as: '%s'", user.nickname)
                 flash(_(u"Fallback Login as: '%(nickname)s', LDAP Server not reachable, or user not known",
                         nickname=user.nickname),
@@ -1428,7 +1428,7 @@ def login():
                     log.info('Username missing for password reset IP-adress: %s', ipAdress)
             else:
                 if user and check_password_hash(str(user.password), form['password']) and user.nickname != "Guest":
-                    login_user(user, remember=True)
+                    login_user(user, remember=bool(form.get('remember_me')))
                     log.debug(u"You are now logged in as: '%s'", user.nickname)
                     flash(_(u"You are now logged in as: '%(nickname)s'", nickname=user.nickname), category="success")
                     config.config_is_initial = False
@@ -1437,7 +1437,7 @@ def login():
                     log.info('Login failed for user "%s" IP-adress: %s', form['username'], ipAdress)
                     flash(_(u"Wrong Username or Password"), category="error")
 
-    next_url = url_for('web.index')
+    next_url = request.args.get('next', default=url_for("web.index"), type=str)
     return render_title_template('login.html',
                                  title=_(u"login"),
                                  next_url=next_url,
@@ -1714,7 +1714,7 @@ def show_book(book_id):
                 try:
                     matching_have_read_book = getattr(entries, 'custom_column_' + str(config.config_read_column))
                     have_read = len(matching_have_read_book) > 0 and matching_have_read_book[0].value
-                except KeyError:
+                except (KeyError, AttributeError):
                     log.error("Custom Column No.%d is not existing in calibre database", config.config_read_column)
                     have_read = None
 

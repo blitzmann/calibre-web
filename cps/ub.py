@@ -19,6 +19,7 @@
 
 from __future__ import division, print_function, unicode_literals
 import os
+import sys
 import datetime
 import itertools
 import uuid
@@ -175,20 +176,20 @@ class UserBase:
         return self.check_visibility(constants.DETAIL_RANDOM)
 
     def list_denied_tags(self):
-        mct = self.denied_tags.split(",")
-        return [t.strip() for t in mct]
+        mct = self.denied_tags or ""
+        return [t.strip() for t in mct.split(",")]
 
     def list_allowed_tags(self):
-        mct = self.allowed_tags.split(",")
-        return [t.strip() for t in mct]
+        mct = self.allowed_tags or ""
+        return [t.strip() for t in mct.split(",")]
 
     def list_denied_column_values(self):
-        mct = self.denied_column_value.split(",")
-        return [t.strip() for t in mct]
+        mct = self.denied_column_value or ""
+        return [t.strip() for t in mct.split(",")]
 
     def list_allowed_column_values(self):
-        mct = self.allowed_column_value.split(",")
-        return [t.strip() for t in mct]
+        mct = self.allowed_column_value or ""
+        return [t.strip() for t in mct.split(",")]
 
     def __repr__(self):
         return '<User %r>' % self.nickname
@@ -562,8 +563,8 @@ def migrate_Database(session):
         conn = engine.connect()
         conn.execute("ALTER TABLE user ADD column `denied_tags` String DEFAULT ''")
         conn.execute("ALTER TABLE user ADD column `allowed_tags` String DEFAULT ''")
-        conn.execute("ALTER TABLE user ADD column `denied_column_value` DEFAULT ''")
-        conn.execute("ALTER TABLE user ADD column `allowed_column_value` DEFAULT ''")
+        conn.execute("ALTER TABLE user ADD column `denied_column_value` String DEFAULT ''")
+        conn.execute("ALTER TABLE user ADD column `allowed_column_value` String DEFAULT ''")
         session.commit()
     try:
         session.query(exists().where(User.series_view)).scalar()
@@ -603,9 +604,13 @@ def migrate_Database(session):
         session.commit()
 
     # Remove login capability of user Guest
-    conn = engine.connect()
-    conn.execute("UPDATE user SET password='' where nickname = 'Guest' and password !=''")
-    session.commit()
+    try:
+        conn = engine.connect()
+        conn.execute("UPDATE user SET password='' where nickname = 'Guest' and password !=''")
+        session.commit()
+    except exc.OperationalError:
+        print('Settings database is not writeable. Exiting...')
+        sys.exit(1)
 
 
 def clean_database(session):
