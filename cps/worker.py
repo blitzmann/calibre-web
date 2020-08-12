@@ -30,6 +30,8 @@ import hashlib
 from tempfile import gettempdir
 from urllib.parse import urlparse
 
+from sqlalchemy.exc import OperationalError
+
 from .constants import BookMeta
 
 
@@ -296,6 +298,7 @@ class WorkerThread(threading.Thread):
 
         tmp_dir = os.path.join(gettempdir(), 'calibre_web')
 
+        # TODO: check to make sure the extension of the file is allowable
         if not os.path.isdir(tmp_dir):
             os.mkdir(tmp_dir)
 
@@ -365,6 +368,7 @@ class WorkerThread(threading.Thread):
         task_ids = self.queue[index]['tasks']
         bundle_name = self.queue[index]['bundle_name']
         product_name = self.queue[index]['product_name']
+        print ("LINKING "+product_name)
         #
         # # se tup temp data
         # tmp_dir = os.path.join(gettempdir(), 'calibre_web')
@@ -382,7 +386,7 @@ class WorkerThread(threading.Thread):
 
         # find all the objects with these tasks
         dl_tasks = [x for x in self.queue if x.get("id", None) in task_ids]
-
+        original_filename = dl_tasks[0]["results"]["filename_root"]
         processed = []
         # we loop through the DL items start assigning their meta data to the base meta object
         for task in dl_tasks:
@@ -398,7 +402,7 @@ class WorkerThread(threading.Thread):
             file_path=processed[0].file_path,
             extension=processed[0].extension,
             # We know the title from the bundle itself. Hardcode it here to avoid issue where we can't get any metadata, and thus don't know what book this is
-            title=product_name,
+            title=next((meta.title for meta in processed if meta.title != original_filename), None) or product_name,
             author=next((meta.author for meta in processed if meta.author != _(u'Unknown')), None) or _(u'Unknown'),
             cover=next((meta.cover for meta in processed if meta.cover is not None), None),
             description=next((meta.description for meta in processed if meta.description not in (None, "")), None) or "",
@@ -408,8 +412,70 @@ class WorkerThread(threading.Thread):
             languages=next((meta.languages for meta in processed if meta.languages not in (None, "")), None) or ""
         )
 
-        task = {'task': 'add_book', 'meta': meta, 'id': self.UIqueue[index]["id"]}
-        self.db_queue.put(task)
+        # todo: check to see if the book exists. If it does, add everything under that format.
+        # todo: link to the proper book in the task message
+
+        import traceback
+
+        try:
+            from .editbooks import _add_to_db  # circular import bleh
+            results, db_book, error = _add_to_db(meta, calibre_db)
+
+            # todo: check errors for... well errors and fail this and the other tasks if any are found and unrecoverable
+
+            ## From here we should have the book added to the database, now we need to link the other downloads to the book
+            for format in processed[1:]: # slice 1:0 since the 0 indexed was already added
+                file_name = db_book.path.rsplit('/', 1)[-1]
+                filepath = os.path.normpath(os.path.join(config.config_calibre_dir, db_book.path))
+                saved_filename = os.path.join(filepath, file_name + format.extension)
+
+                # check if file path exists, otherwise create it, copy file to calibre path and delete temp file
+                if not os.path.exists(filepath):
+                    try:
+                        os.makedirs(filepath)
+                    except OSError:
+                        pass
+                        # todo: error out
+                        # flash(_(u"Failed to create path %(path)s (Permission denied).", path=filepath), category="error")
+                try:
+                    copyfile(format.file_path, saved_filename)
+                    # os.unlink(format.file_path)
+                except OSError as e:
+                    pass
+                    # todo: fail?
+                    #log.error("Failed to move file %s: %s", saved_filename, e)
+                    #results["failed_move"] = (saved_filename, e)
+                    #return results, None, None
+
+                ext_upper = format.extension[1:].upper()
+                file_size = os.path.getsize(format.file_path)
+                is_format = calibre_db.get_book_format(db_book.id, ext_upper)
+
+                # Format entry already exists, no need to update the database
+                if is_format:
+                    log.warning('Book format %s already existing', ext_upper)
+                else:
+                    try:
+                        db_format = db.Data(db_book.id, ext_upper, file_size, file_name)
+                        calibre_db.session.add(db_format)
+                        calibre_db.session.commit()
+                        calibre_db.update_title_sort(config)
+                    except OperationalError as e:
+                        calibre_db.session.rollback()
+                        log.error('Database error: %s', e)
+                        # todo: ... what?
+
+            print("IT WORKED!")
+        except OperationalError as e:
+            calibre_db.session.rollback()
+            print(traceback.print_exc())
+        except Exception as e:
+            print(e)
+            print(traceback.print_exc())
+        pass
+
+        # task = {'task': 'add_book', 'meta': meta, 'id': self.UIqueue[index]["id"]}
+        # self.db_queue.put(task)
         # todo: if there's an error, call back to this thread with details using the id
 
         # try:
@@ -634,8 +700,6 @@ class WorkerThread(threading.Thread):
         task_ids = []
 
         for x in download_info:
-            # todo: this will have to add multiple tasks: one for each download. _But_ the first one will have to be a
-            # "new" book, whereas the subsequent ones will have to be adding a format to it.
             self.id += 1
 
             self.queue.append({'taskType': TASK_HB_DOWNLOAD, 'download_info': x, "id": self.id})
@@ -643,8 +707,8 @@ class WorkerThread(threading.Thread):
                 'user': user_name,
                 'formStarttime': '',
                 'progress': " 0 %",
-                'taskMess': 'Downloading {book_title} ({format}) [{bundle_name}]'.format(
-                    book_title=product_name, format=x["name"], bundle_name=bundle_name ),
+                'taskMess': 'Downloading {book_title} ({size} {format}) [{bundle_name}]'.format(
+                    book_title=product_name, size=x["human_size"], format=x["name"], bundle_name=bundle_name ),
                 'runtime': '0 s',
                 'stat': STAT_WAITING,
                 'id': self.id,
@@ -844,8 +908,6 @@ def add_convert(file_path, bookid, user_name, taskMessage, settings, kindle_mail
 def add_hb_download(user_name, bundle_name, product_name, download_info):
     return _worker.add_hb_download(user_name, bundle_name, product_name, download_info)
 
-def add_format_test(user_name):
-    return _worker.add_format_test(user_name)
 
 _worker = WorkerThread()
 _worker.start()
