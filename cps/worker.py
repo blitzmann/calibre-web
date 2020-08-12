@@ -30,7 +30,7 @@ import hashlib
 from tempfile import gettempdir
 from urllib.parse import urlparse
 
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import SQLAlchemyError
 
 from .constants import BookMeta
 
@@ -419,6 +419,7 @@ class WorkerThread(threading.Thread):
 
         try:
             from .editbooks import _add_to_db  # circular import bleh
+            # todo: maybe add an original file name to Meta that this can access and save... maybe provide an option...
             results, db_book, error = _add_to_db(meta, calibre_db)
 
             # todo: check errors for... well errors and fail this and the other tasks if any are found and unrecoverable
@@ -460,18 +461,20 @@ class WorkerThread(threading.Thread):
                         calibre_db.session.add(db_format)
                         calibre_db.session.commit()
                         calibre_db.update_title_sort(config)
-                    except OperationalError as e:
+                    except SQLAlchemyError as e:
                         calibre_db.session.rollback()
                         log.error('Database error: %s', e)
                         # todo: ... what?
 
             print("IT WORKED!")
-        except OperationalError as e:
+        except SQLAlchemyError as e:
             calibre_db.session.rollback()
             print(traceback.print_exc())
         except Exception as e:
             print(e)
             print(traceback.print_exc())
+
+            # there may be an issue with integrity... need to catch this?
         pass
 
         # task = {'task': 'add_book', 'meta': meta, 'id': self.UIqueue[index]["id"]}
