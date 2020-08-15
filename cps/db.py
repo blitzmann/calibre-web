@@ -360,28 +360,9 @@ class CalibreDB(threading.Thread):
                     self.session.commit()
                 except OperationalError as e:
                     self.session.rollback()
-                    print(e)
                     self.log.error("Database error: %s", e)
                     # self._handleError(_(u"Database error: %(error)s.", error=e))
                     # return
-            if i['task'] == 'add_book':
-                from .editbooks import _add_to_db # circular import bleh
-                try:
-                    results, db_book, error = _add_to_db(i['meta'], self)
-                    self.session.commit()
-                    print ("IT WORKED!")
-                except OperationalError as e:
-                    self.session.rollback()
-
-                    import traceback
-                    tb = traceback.format_exc()
-                    print(e, tb)
-                    self.log.error("Database error: %s", e)
-
-                except Exception as e:
-                    print("BROKE!")
-                    print(e)
-                pass
             self.queue.task_done()
 
 

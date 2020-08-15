@@ -22,6 +22,7 @@
 
 from __future__ import division, print_function, unicode_literals
 import os
+from collections import namedtuple
 from datetime import datetime
 import json
 from shutil import copyfile
@@ -40,7 +41,6 @@ from .web import login_required_if_no_ano, render_title_template, edit_required,
 
 editbook = Blueprint('editbook', __name__)
 log = logger.create()
-
 
 # Modifies different Database objects, first check if elements have to be added to database, than check
 # if elements have to be deleted, because they are no longer used
@@ -693,24 +693,37 @@ def identifier_list(to_save, book):
         result.append( db.Identifiers(to_save[val_key], type_value, book.id) )
     return result
 
-def _add_to_db(meta, calibre_db):
+class CreatePathException(Exception):
+    def __init__(self, path, message):
+        self.path = path
+        self.message = message
+        super().__init__(self.message)
+
+class MoveFileException(Exception):
+    def __init__(self, file, message, inner):
+        self.file = file
+        self.message = message
+        self.inner = inner
+        super().__init__(self.message)
+
+# Some results of adding a book to the database. The calling function will determine how to handle these
+AddBookResults = namedtuple('AddBookResults', 'db_book, exists, cover_move_failed, dir_struct_error')
+
+def add_book_to_db(meta):
     calibre_db.session.connection().connection.connection.create_function('uuid4', 0, lambda: str(uuid4()))
 
-    results= {
-        "exists": False,
-        "denied": False,
-        "failed_move": False,
-        "failed_move_cover": False
-    }
     modif_date = False
     title = meta.title
     authr = meta.author
+
+    exists = False
+    cover_move_failed = False
 
     if title != _(u'Unknown') and authr != _(u'Unknown'):
         entry = calibre_db.check_exists_book(authr, title)
         if entry:
             log.info("Uploaded book probably exists in library")
-            results["exists"] = entry
+            exists = entry
 
     # handle authors
     input_authors = authr.split('&')
@@ -750,15 +763,17 @@ def _add_to_db(meta, calibre_db):
         try:
             os.makedirs(filepath)
         except OSError as e:
-            log.error("Failed to create path %s (Permission denied)", filepath)
-            results["denied"] = filepath
-            return results, None, None
+            msg = "Failed to create path %s (Permission denied)" % filepath
+            log.error(msg)
+            raise CreatePathException(filepath, msg)
+
     try:
         copyfile(meta.file_path, saved_filename)
     except OSError as e:
-        log.error("Failed to move file %s: %s", saved_filename, e)
-        results["failed_move"] = (saved_filename, e)
-        return results, None, None
+        msg = "Failed to move file %s: %s" % (saved_filename, e)
+        log.error(msg)
+        raise MoveFileException(saved_filename, msg, e)
+
     try:
         os.unlink(meta.file_path)
     except Exception as e:
@@ -821,8 +836,7 @@ def _add_to_db(meta, calibre_db):
             os.unlink(meta.cover)
         except OSError as e:
             log.error("Failed to move cover file %s: %s", new_coverpath, e)
-            results["failed_move_cover"] = (new_coverpath, e)
-            return results, None, None
+            cover_move_failed = (new_coverpath, e)
 
     # save data to database, reread data
     calibre_db.session.commit()
@@ -833,7 +847,11 @@ def _add_to_db(meta, calibre_db):
     if config.config_use_google_drive:
         gdriveutils.updateGdriveCalibreFromLocal()
 
-    return results, db_book, error
+    return AddBookResults(
+        db_book=db_book,
+        exists=exists,
+        cover_move_failed=cover_move_failed,
+        dir_struct_error=error)
 
 @editbook.route("/upload", methods=["GET", "POST"])
 @login_required_if_no_ano
@@ -868,39 +886,39 @@ def upload():
                             filename= requested_file.filename), category="error")
                     return Response(json.dumps({"location": url_for("web.index")}), mimetype='application/json')
 
-                results, db_book, error = _add_to_db(meta, calibre_db)
+                try:
+                    results = add_book_to_db(meta)
 
-                if results["exists"]:
-                    flash(_(u"Uploaded book probably exists in the library, consider to change before upload new: ")
-                          + Markup(render_title_template('book_exists_flash.html', entry=results["exists"])), category="warning")
+                    if results.cover_move_failed:
+                        new_coverpath, e = results.cover_move_failed
+                        flash(_(u"Failed to Move Cover File %(file)s: %(error)s", file=new_coverpath, error=e),
+                              category="error")
+                    if results.exists:
+                        flash(_(u"Uploaded book probably exists in the library, consider to change before upload new: ")
+                          + Markup(render_title_template('book_exists_flash.html', entry=results.exists)),
+                          category="warning")
+                    if results.dir_struct_error:
+                        flash(results.dir_struct_error, category="error")
 
-                if results["denied"]:
-                    flash(_(u"Failed to create path %(path)s (Permission denied).", path=results["denied"]), category="error")
+                    uploadText = _(u"File %(file)s uploaded", file=results.db_book.title)
+                    worker.add_upload(current_user.nickname,
+                        "<a href=\"" + url_for('web.show_book', book_id=results.db_book.id) + "\">" + uploadText + "</a>")
+
+                    if len(request.files.getlist("btn-upload")) < 2:
+                        if current_user.role_edit() or current_user.role_admin():
+                            resp = {"location": url_for('editbook.edit_book', book_id=results.db_book.id)}
+                            return Response(json.dumps(resp), mimetype='application/json')
+                        else:
+                            resp = {"location": url_for('web.show_book', book_id=results.db_book.id)}
+                            return Response(json.dumps(resp), mimetype='application/json')
+
+                except CreatePathException as ex:
+                    flash(_(u"Failed to create path %(path)s (Permission denied).", path=ex.path),
+                          category="error")
                     return Response(json.dumps({"location": url_for("web.index")}), mimetype='application/json')
-
-                if results["failed_move"]:
-                    saved_filename, e = results["failed_move"]
-                    flash(_(u"Failed to Move File %(file)s: %(error)s", file=saved_filename, error=e), category="error")
+                except MoveFileException as ex:
+                    flash(_(u"Failed to Move File %(file)s: %(error)s", file=ex.path, error=ex.inner), category="error")
                     return Response(json.dumps({"location": url_for("web.index")}), mimetype='application/json')
-
-                if results["failed_move_cover"]:
-                    new_coverpath, e = results["failed_move_cover"]
-                    flash(_(u"Failed to Move Cover File %(file)s: %(error)s", file=new_coverpath, error=e), category="error")
-
-                if error:
-                    flash(error, category="error")
-
-                uploadText = _(u"File %(file)s uploaded", file=db_book.title)
-                worker.add_upload(current_user.nickname,
-                    "<a href=\"" + url_for('web.show_book', book_id=db_book.id) + "\">" + uploadText + "</a>")
-
-                # if len(request.files.getlist("btn-upload")) < 2:
-                #     if current_user.role_edit() or current_user.role_admin():
-                #         resp = {"location": url_for('editbook.edit_book', book_id=db_book.id)}
-                #         return Response(json.dumps(resp), mimetype='application/json')
-                #     else:
-                #         resp = {"location": url_for('web.show_book', book_id=db_book.id)}
-                #         return Response(json.dumps(resp), mimetype='application/json')
             except OperationalError as e:
                 calibre_db.session.rollback()
                 log.error("Database error: %s", e)

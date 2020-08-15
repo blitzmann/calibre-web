@@ -30,6 +30,7 @@ import hashlib
 from tempfile import gettempdir
 from urllib.parse import urlparse
 
+from flask import url_for
 from sqlalchemy.exc import SQLAlchemyError
 
 from .constants import BookMeta
@@ -60,7 +61,7 @@ from email.utils import make_msgid
 from email.generator import Generator
 from flask_babel import gettext as _
 
-from . import calibre_db, db
+from . import calibre_db, db, constants
 from . import logger, config
 from .subproc_wrapper import process_open
 from . import gdriveutils
@@ -284,7 +285,6 @@ class WorkerThread(threading.Thread):
 
     def _download_hb(self):
         # convert book, and upload in case of google drive
-        import os
         self.doLock.acquire()
 
         index = self.current
@@ -294,68 +294,72 @@ class WorkerThread(threading.Thread):
         self.UIqueue[index]['formStarttime'] = self.queue[index]['starttime']
         curr_task = self.queue[index]['taskType']
 
-        dl = self.queue[index]['download_info']
+        try:
+            dl = self.queue[index]['download_info']
 
-        tmp_dir = os.path.join(gettempdir(), 'calibre_web')
+            tmp_dir = os.path.join(gettempdir(), 'calibre_web')
 
-        # TODO: check to make sure the extension of the file is allowable
-        if not os.path.isdir(tmp_dir):
-            os.mkdir(tmp_dir)
+            if dl["name"].lower() not in constants.EXTENSIONS_UPLOAD:
+                    raise Exception(_("File extension '{ext}' is not allowed to be uploaded to this server".format(ext=dl["name"].lower())))
 
-        tmp_file_path = os.path.join(tmp_dir, dl["sha1"])
-        log.debug("Temporary file: %s", tmp_file_path)
+            if not os.path.isdir(tmp_dir):
+                os.mkdir(tmp_dir)
 
-        url = dl["url"]["web"]
-        a = urlparse(url)
-        filename = os.path.basename(a.path)
-        filename_root, file_extension = os.path.splitext(filename)
+            tmp_file_path = os.path.join(tmp_dir, dl["sha1"])
+            log.debug("Temporary file: %s", tmp_file_path)
 
-        # todo: filename should be in temp directory... unsure what it should be called... look into the upload route to
-        # determine how this happens
-        with open(tmp_file_path, 'wb') as f:
-            response = requests.get(dl["url"]["web"], stream=True)
-            total = response.headers.get('content-length')
+            url = dl["url"]["web"]
+            a = urlparse(url)
+            filename = os.path.basename(a.path)
+            filename_root, file_extension = os.path.splitext(filename)
 
-            if total is None:
-                f.write(response.content)
-            else:
-                downloaded = 0
-                total = int(total)
-                for data in response.iter_content(chunk_size=max(int(total / 1000), 1024 * 1024)):
-                    downloaded += len(data)
-                    f.write(data)
-                    self.UIqueue[index]['progress'] = '{} %'.format(math.floor((downloaded / total) * 100))
-            pass
+            self.queue[index]["results"] = {
+                "success": False, # Default to false, we'll update this at the end
+                "filepath": tmp_file_path,
+                "filename_root": filename_root,
+                "file_extension": file_extension
+            }
 
-        sha1 = hashlib.sha1()
+            # download file to temp location, complete with progress loop
+            with open(tmp_file_path, 'wb') as f:
+                response = requests.get(dl["url"]["web"], stream=True)
+                total = response.headers.get('content-length')
 
-        with open(tmp_file_path, 'rb') as f:
-            while True:
-                data = f.read(BUF_SIZE)
-                if not data:
-                    break
-                sha1.update(data)
+                if total is None:
+                    f.write(response.content)
+                else:
+                    downloaded = 0
+                    total = int(total)
+                    for data in response.iter_content(chunk_size=max(int(total / 1000), 1024 * 1024)):
+                        downloaded += len(data)
+                        f.write(data)
+                        self.UIqueue[index]['progress'] = '{} %'.format(math.floor((downloaded / total) * 100))
 
-        if sha1.hexdigest() != dl["sha1"]:
-            return self._handleError("SHA1 integrity check failed after download")
+            # Determine checksum
+            md5 = hashlib.md5()
 
-        self.queue[index]["results"] = {
-            "success": True, # todo: don't hardcode this
-            "filepath": tmp_file_path,
-            "filename_root": filename_root,
-            "file_extension": file_extension
-        }
+            with open(tmp_file_path, 'rb') as f:
+                while True:
+                    data = f.read(BUF_SIZE)
+                    if not data:
+                        break
+                    md5.update(data)
 
-        self._handleSuccess()
+            # Commenting out for now, apparently Humble's api can return inaccurate data for the hashes
+            # if md5.hexdigest() != dl["md5"]:
+            #     return self._handleError("Integrity check faailed after download")
 
-        # it's technically done, but the link portion needs these around still. We set these to started to avoid
-        # the cleanup process from cleaning them up
+            self.queue[index]["results"]["success"] = True
+            self._handleSuccess()
 
-        self.UIqueue[index]['stat'] = STAT_STARTED
+            # it's technically done, but the link portion needs these around still. We set these to started to avoid
+            # the cleanup process from removing them
+
+            self.UIqueue[index]['stat'] = STAT_STARTED
+        except Exception as e:
+            self._handleError(str(e))
 
     def _link_hb(self):
-        from .editbooks import _add_to_db # importing it here prevents a circular import issue
-        # convert book, and upload in case of google drive
         self.doLock.acquire()
 
         index = self.current
@@ -365,64 +369,51 @@ class WorkerThread(threading.Thread):
         self.UIqueue[index]['formStarttime'] = self.queue[index]['starttime']
         curr_task = self.queue[index]['taskType']
 
+        # The download tasks associated with this processing task
         task_ids = self.queue[index]['tasks']
         bundle_name = self.queue[index]['bundle_name']
         product_name = self.queue[index]['product_name']
-        print ("LINKING "+product_name)
-        #
-        # # se tup temp data
-        # tmp_dir = os.path.join(gettempdir(), 'calibre_web')
-        #
-        # if not os.path.isdir(tmp_dir):
-        #     os.mkdir(tmp_dir)
-        #
-        # filename = uploadfile.filename
-        # filename_root, file_extension = os.path.splitext(filename)
-        # md5 = hashlib.md5(filename.encode('utf-8')).hexdigest()
-        # tmp_file_path = os.path.join(tmp_dir, md5)
-        # log.debug("Temporary file: %s", tmp_file_path)
-        # uploadfile.save(tmp_file_path)
-        # return process(tmp_file_path, filename_root, file_extension, rarExcecutable)
 
         # find all the objects with these tasks
         dl_tasks = [x for x in self.queue if x.get("id", None) in task_ids]
         original_filename = dl_tasks[0]["results"]["filename_root"]
-        processed = []
-        # we loop through the DL items start assigning their meta data to the base meta object
-        for task in dl_tasks:
-            processed.append(process(
-                task["results"]["filepath"],
-                task["results"]["filename_root"],
-                task["results"]["file_extension"],
-                ''  # todo: figure this guy out
-            ))
 
-        # create a new BaseMeta tuple that holds the final values that we will use
-        meta = BookMeta(
-            file_path=processed[0].file_path,
-            extension=processed[0].extension,
-            # We know the title from the bundle itself. Hardcode it here to avoid issue where we can't get any metadata, and thus don't know what book this is
-            title=next((meta.title for meta in processed if meta.title != original_filename), None) or product_name,
-            author=next((meta.author for meta in processed if meta.author != _(u'Unknown')), None) or _(u'Unknown'),
-            cover=next((meta.cover for meta in processed if meta.cover is not None), None),
-            description=next((meta.description for meta in processed if meta.description not in (None, "")), None) or "",
-            tags=next((meta.tags for meta in processed if meta.tags not in (None, "")), None) or "",
-            series=next((meta.series for meta in processed if meta.series not in (None, "")), None) or "",
-            series_id=next((meta.series_id for meta in processed if meta.series_id not in (None, "")), None) or "",
-            languages=next((meta.languages for meta in processed if meta.languages not in (None, "")), None) or ""
-        )
-
-        # todo: check to see if the book exists. If it does, add everything under that format.
-        # todo: link to the proper book in the task message
-
-        import traceback
 
         try:
-            from .editbooks import _add_to_db  # circular import bleh
-            # todo: maybe add an original file name to Meta that this can access and save... maybe provide an option...
-            results, db_book, error = _add_to_db(meta, calibre_db)
+            from .editbooks import add_book_to_db  # inline import to avoid circular import
+            processed = []
+            # we loop through the DL items start collecting their metadata
+            for task in dl_tasks:
+                processed.append(process(
+                    task["results"]["filepath"],
+                    task["results"]["filename_root"],
+                    task["results"]["file_extension"],
+                    ''  # todo: figure this guy out
+                ))
 
-            # todo: check errors for... well errors and fail this and the other tasks if any are found and unrecoverable
+            # cbz metadata is horrible at collecting the cover image. Use cbz as last resort
+            cover_priority = lambda x: x.extension == '.cbz'
+
+            # create a new BaseMeta tuple that holds the final values that we will use. We aggregate the various downloaded
+            # metadata here
+            meta = BookMeta(
+                file_path=processed[0].file_path,
+                extension=processed[0].extension,
+                # We know the title from the bundle itself. Hardcode it here to avoid issue where we can't get any metadata, and thus don't know what book this is
+                title=next((meta.title for meta in processed if meta.title != original_filename), None) or product_name,
+                author=next((meta.author for meta in processed if meta.author != _(u'Unknown')), None) or _(u'Unknown'),
+                cover=next((meta.cover for meta in sorted(processed, key=cover_priority) if meta.cover is not None), None),
+                description=next((meta.description for meta in processed if meta.description not in (None, "")), None) or "",
+                tags=next((meta.tags for meta in processed if meta.tags not in (None, "")), None) or "" + ", Humble Bundle: " + bundle_name,
+                series=next((meta.series for meta in processed if meta.series not in (None, "")), None) or "",
+                series_id=next((meta.series_id for meta in processed if meta.series_id not in (None, "")), None) or "",
+                languages=next((meta.languages for meta in processed if meta.languages not in (None, "")), None) or ""
+            )
+
+            # todo: check to see if the book exists. If it does, add everything under that format.
+
+            results = add_book_to_db(meta)
+            db_book = results.db_book
 
             ## From here we should have the book added to the database, now we need to link the other downloads to the book
             for format in processed[1:]: # slice 1:0 since the 0 indexed was already added
@@ -432,21 +423,10 @@ class WorkerThread(threading.Thread):
 
                 # check if file path exists, otherwise create it, copy file to calibre path and delete temp file
                 if not os.path.exists(filepath):
-                    try:
-                        os.makedirs(filepath)
-                    except OSError:
-                        pass
-                        # todo: error out
-                        # flash(_(u"Failed to create path %(path)s (Permission denied).", path=filepath), category="error")
-                try:
-                    copyfile(format.file_path, saved_filename)
-                    # os.unlink(format.file_path)
-                except OSError as e:
-                    pass
-                    # todo: fail?
-                    #log.error("Failed to move file %s: %s", saved_filename, e)
-                    #results["failed_move"] = (saved_filename, e)
-                    #return results, None, None
+                    os.makedirs(filepath)
+
+                # move the temp file to the new location
+                copyfile(format.file_path, saved_filename)
 
                 ext_upper = format.extension[1:].upper()
                 file_size = os.path.getsize(format.file_path)
@@ -456,36 +436,25 @@ class WorkerThread(threading.Thread):
                 if is_format:
                     log.warning('Book format %s already existing', ext_upper)
                 else:
-                    try:
-                        db_format = db.Data(db_book.id, ext_upper, file_size, file_name)
-                        calibre_db.session.add(db_format)
-                        calibre_db.session.commit()
-                        calibre_db.update_title_sort(config)
-                    except SQLAlchemyError as e:
-                        calibre_db.session.rollback()
-                        log.error('Database error: %s', e)
-                        # todo: ... what?
+                    db_format = db.Data(db_book.id, ext_upper, file_size, file_name)
+                    calibre_db.session.add(db_format)
+                    calibre_db.session.commit()
+                    calibre_db.update_title_sort(config)
 
-            print("IT WORKED!")
+            # link to the processed book
+            self.UIqueue[index]['taskMess'] = "<a href=\"/book/{book_id}\">{message}</a>".format(
+                book_id=db_book.id,
+                message=self.UIqueue[index]['taskMess']
+            )
+
         except SQLAlchemyError as e:
             calibre_db.session.rollback()
-            print(traceback.print_exc())
+            log.error('Database error: %s', e)
+            self._handleError(str(e))
         except Exception as e:
-            print(e)
-            print(traceback.print_exc())
-
-            # there may be an issue with integrity... need to catch this?
-        pass
-
-        # task = {'task': 'add_book', 'meta': meta, 'id': self.UIqueue[index]["id"]}
-        # self.db_queue.put(task)
-        # todo: if there's an error, call back to this thread with details using the id
-
-        # try:
-        #     results, db_book, error = _add_to_db(base, calibre_db)
-        # except Exception as e:
-        #     return self._handleError(str(e))
-        #     pass
+            # gracefully handle eny other error that is thrown
+            log.error('Unknown error: %s', e)
+            self._handleError(str(e))
 
         # if everything is successfull, set the download tasks to Success
         for ui in self.UIqueue:
@@ -711,8 +680,11 @@ class WorkerThread(threading.Thread):
                 'user': user_name,
                 'formStarttime': '',
                 'progress': " 0 %",
-                'taskMess': 'Downloading {book_title} ({size} {format}) [{bundle_name}]'.format(
-                    book_title=product_name, size=x["human_size"], format=x["name"], bundle_name=bundle_name ),
+                'taskMess': '{book_title} ({size} {format}) [{bundle_name}]'.format(
+                    book_title=(product_name[:70] + '...') if len(product_name) > 70 else product_name,
+                    size=x["human_size"],
+                    format=x["name"],
+                    bundle_name=bundle_name),
                 'runtime': '0 s',
                 'stat': STAT_WAITING,
                 'id': self.id,
@@ -735,8 +707,10 @@ class WorkerThread(threading.Thread):
             'user': user_name,
             'formStarttime': '',
             'progress': " 0 %",
-            'taskMess': 'Processing {book_title} [{bundle_name}]'.format(
-                book_title=product_name, bundle_name=bundle_name),
+            'taskMess': '{book_title} [{bundle_name}]'.format(
+                book_title=(product_name[:70] + '...') if len(product_name) > 70 else product_name,
+                bundle_name=bundle_name
+            ),
             'runtime': '0 s',
             'stat': STAT_WAITING,
             'id': self.id,
