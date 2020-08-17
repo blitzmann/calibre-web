@@ -769,3 +769,12 @@ $(window).on("resize", function () {
     mobileSupport();
 });
 
+
+////// CUSTOMIZATIONS
+$("#top_humble").attr({
+    "data-toggle": "tooltip",
+    "title": $("#top_humble").attr("data-text"),     // Humble
+    "data-placement": "bottom",
+    "data-viewport": "#main-nav"
+})
+    .addClass("admin-btn-tooltip");

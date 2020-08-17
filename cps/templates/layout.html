@@ -68,7 +68,7 @@
                       </div>
                     </form>
                   </li>
-                  <li><a id="top_humble" href="{{url_for('humble.humble_set_up')}}"><span class="glyphicon glyphicon-gift"></span> <span class="hidden-sm">{{_('HB')}}</span></a></li>
+                  <li><a id="top_humble" data-text="{{_('Humble Bundle')}}" href="{{url_for('humble.humble_set_up')}}"><span class="glyphicon glyphicon-gift"></span> <span class="hidden-sm">{{_('HB')}}</span></a></li>
                 {% endif %}
               {% endif %}
               {% if not g.user.is_anonymous %}

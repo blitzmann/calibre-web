@@ -15,3 +15,7 @@ body.serieslist.grid-view div.container-fluid>div>div.col-sm-10:before{
 .cover{
     box-shadow: 0 0 4px rgba(0,0,0,.6);
 }
+
+#top_humble > span.hidden-sm {
+    display: none
+}
