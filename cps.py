@@ -40,7 +40,7 @@ from cps.about import about
 from cps.shelf import shelf
 from cps.admin import admi
 from cps.gdrive import gdrive
-from cps.humblebundle import humble
+from cps.humble.humblebundle import humble
 from cps.editbooks import editbook
 
 try:
@@ -67,7 +67,8 @@ def main():
     app.register_blueprint(admi)
     app.register_blueprint(gdrive)
     app.register_blueprint(editbook)
-    app.register_blueprint(humble)
+    app.register_blueprint(humble, url_prefix='/humble')
+    # print(app.url_map)
     if kobo_available:
         app.register_blueprint(kobo)
         app.register_blueprint(kobo_auth)

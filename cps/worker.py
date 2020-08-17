@@ -84,7 +84,7 @@ TASK_UPLOAD = 3
 TASK_CONVERT_ANY = 4
 TASK_HB_DOWNLOAD = 5
 TASK_HB_LINK = 6
-TASK_TEST = 7
+TASK_HB_GET_ORDERS = 7
 
 RET_FAIL = 0
 RET_SUCCESS = 1
@@ -235,8 +235,8 @@ class WorkerThread(threading.Thread):
                         self._download_hb()
                     if self.queue[index]['taskType'] == TASK_HB_LINK:
                         self._link_hb()
-                    if self.queue[index]['taskType'] == TASK_TEST:
-                        self.format_test()
+                    if self.queue[index]['taskType'] == TASK_HB_GET_ORDERS:
+                        self._hb_get_orders()
 
                     # TASK_UPLOAD is handled implicitly
                     self.doLock.acquire()
@@ -272,7 +272,7 @@ class WorkerThread(threading.Thread):
 
     def get_taskstatus(self):
         self.doLock.acquire()
-        if self.current  < len(self.queue):
+        if self.current < len(self.queue):
             if self.UIqueue[self.current]['stat'] == STAT_STARTED:
                 if self.queue[self.current]['taskType'] == TASK_EMAIL:
                     self.UIqueue[self.current]['progress'] = self.get_send_status()
@@ -282,6 +282,77 @@ class WorkerThread(threading.Thread):
                                                    + self.UIqueue[self.current]['formRuntime'].microseconds
         self.doLock.release()
         return self.UIqueue
+
+    def _hb_get_orders(self):
+        self.doLock.acquire()
+
+        index = self.current
+        self.doLock.release()
+        self.UIqueue[index]['stat'] = STAT_STARTED
+        self.queue[index]['starttime'] = datetime.now()
+        self.UIqueue[index]['formStarttime'] = self.queue[index]['starttime']
+        curr_task = self.queue[index]['taskType']
+
+        headers = {
+            'Accept': 'application/json',
+            'Accept-Charset': 'utf-8',
+            'User-Agent': 'calibre-web-hb-downloader',
+        }
+
+        cookies = {
+            '_simpleauth_sess': self.queue[index]['auth_token']
+        }
+
+        # clear the auth token so that the GC kills it
+        self.queue[index]['auth_token'] = None
+
+        def filter_structs(download):
+            if not download["name"] or not download["url"]:
+                return False
+            return True
+
+        try:
+            keys = self.queue[index]['keys']
+
+            ret = []
+            for i, order in enumerate(keys):
+                #todo: retry logic / handle error
+                req = requests.get(
+                    'https://www.humblebundle.com/api/v1/order/{}?ajax=true'.format(order["gamekey"]),
+                    headers=headers,
+                    cookies=cookies)
+                bundle = req.json()
+
+                bundleRet = {
+                    "name": bundle["product"]["human_name"],
+                    "products": []
+                }
+
+                for product in bundle["subproducts"]:
+                    productRet = {
+                        "name": product["human_name"],
+                        "downloads": []
+                    }
+                    for dl in product["downloads"]:
+                        if dl["platform"] != 'ebook':
+                            continue
+
+                        # this product has an ebook download
+                        productRet["downloads"].extend(
+                            filter(filter_structs, dl["download_struct"])
+                        )
+                    if len(productRet["downloads"]) > 0:
+                        bundleRet["products"].append(productRet)
+
+                if len(bundleRet["products"]) > 0:
+                    ret.append(bundleRet)
+
+                self.UIqueue[index]['progress'] = '{} %'.format(math.floor(((i+1) / len(keys)) * 100))
+
+            self.UIqueue[index]['results'] = ret;
+            self._handleSuccess()
+        except Exception as e:
+            self._handleError(str(e))
 
     def _download_hb(self):
         # convert book, and upload in case of google drive
@@ -665,6 +736,26 @@ class WorkerThread(threading.Thread):
         self.last=len(self.queue)
         self.doLock.release()
 
+    def hb_get_orders(self, user_name, auth_token, keys):
+        self.doLock.acquire()
+        # progress, runtime, and status = 0
+        self.id += 1
+        self.queue.append({'taskType': TASK_HB_GET_ORDERS, 'auth_token': auth_token, "keys": keys, "id": self.id})
+        self.UIqueue.append({
+            'user': user_name,
+            'formStarttime': '',
+            'progress': " 0 %",
+            'taskMess': 'Getting Orders',
+            'runtime': '0 s',
+            'stat': STAT_WAITING,
+            'id': self.id,
+            'taskType': TASK_HB_GET_ORDERS,
+            'results': None
+        })
+        self.last = len(self.queue)
+
+        self.doLock.release()
+        return self.id
 
     def add_hb_download(self, user_name, bundle_name, product_name, download_info):
         self.doLock.acquire()
@@ -720,21 +811,6 @@ class WorkerThread(threading.Thread):
         self.last = len(self.queue)
 
         self.doLock.release()
-
-
-    def add_format_test(self, user_name):
-        # if more than 20 entries in the list, clean the list
-        self.doLock.acquire()
-        if self.last >= 20:
-            self._delete_completed_tasks()
-        # progress, runtime, and status = 0
-        self.id += 1
-        self.queue.append({'starttime': 0, 'taskType': TASK_TEST})
-        self.UIqueue.append({'user': user_name, 'formStarttime': '', 'progress': " 0 %", 'taskMess': "Testing format thing",
-                             'runtime': '0 s', 'stat': STAT_WAITING,'id': self.id, 'taskType': TASK_TEST })
-        self.last=len(self.queue)
-        self.doLock.release()
-
 
     def add_email(self, subject, filepath, attachment, settings, recipient, user_name, taskMessage,
                   text, internal=False):
@@ -884,6 +960,8 @@ def add_upload(user_name, taskMessage):
 def add_convert(file_path, bookid, user_name, taskMessage, settings, kindle_mail=None):
     return _worker.add_convert(file_path, bookid, user_name, taskMessage, settings, kindle_mail)
 
+def hb_get_orders(user_name, auth_token, keys):
+    return _worker.hb_get_orders(user_name, auth_token, keys)
 
 def add_hb_download(user_name, bundle_name, product_name, download_info):
     return _worker.add_hb_download(user_name, bundle_name, product_name, download_info)

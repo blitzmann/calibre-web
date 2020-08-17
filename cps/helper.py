@@ -700,6 +700,19 @@ def format_runtime(runtime):
     return retVal
 
 
+def localize_task_status(stat):
+    if isinstance(stat, int):
+        if stat == STAT_WAITING:
+            return _(u'Waiting')
+        elif stat == STAT_FAIL:
+            return _(u'Failed')
+        elif stat == STAT_STARTED:
+            return  _(u'Started')
+        elif stat == STAT_FINISH_SUCCESS:
+            return _(u'Finished')
+        else:
+            return _(u'Unknown Status')
+
 # helper function to apply localize status information in tasklist entries
 def render_task_status(tasklist):
     renderedtasklist = list()
@@ -718,17 +731,7 @@ def render_task_status(tasklist):
                 task['runtime'] = format_runtime(task['formRuntime'])
 
             # localize the task status
-            if isinstance( task['stat'], int):
-                if task['stat'] == STAT_WAITING:
-                    task['status'] = _(u'Waiting')
-                elif task['stat'] == STAT_FAIL:
-                    task['status'] = _(u'Failed')
-                elif task['stat'] == STAT_STARTED:
-                    task['status'] = _(u'Started')
-                elif task['stat'] == STAT_FINISH_SUCCESS:
-                    task['status'] = _(u'Finished')
-                else:
-                    task['status'] = _(u'Unknown Status')
+            task['status'] = localize_task_status(task['stat'])
 
             # localize the task type
             if isinstance( task['taskType'], int):
