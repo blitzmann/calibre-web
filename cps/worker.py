@@ -481,7 +481,7 @@ class WorkerThread(threading.Thread):
                 author=next((meta.author for meta in processed if meta.author != _(u'Unknown')), None) or _(u'Unknown'),
                 cover=next((meta.cover for meta in sorted(processed, key=cover_priority) if meta.cover is not None), None),
                 description=next((meta.description for meta in processed if meta.description not in (None, "")), None) or "",
-                tags=next((meta.tags for meta in processed if meta.tags not in (None, "")), None) or "" + ", Humble Bundle: " + bundle_name,
+                tags=(next((meta.tags for meta in processed if meta.tags not in (None, "")), None) or "") + ", Humble Bundle: " + bundle_name,
                 series=next((meta.series for meta in processed if meta.series not in (None, "")), None) or "",
                 series_id=next((meta.series_id for meta in processed if meta.series_id not in (None, "")), None) or "",
                 languages=next((meta.languages for meta in processed if meta.languages not in (None, "")), None) or ""
