@@ -29,6 +29,7 @@ import requests
 import hashlib
 from tempfile import gettempdir
 from urllib.parse import urlparse
+from uuid import uuid4
 
 from flask import url_for
 from sqlalchemy.exc import SQLAlchemyError
@@ -363,6 +364,7 @@ class WorkerThread(threading.Thread):
         self.UIqueue[index]['stat'] = STAT_STARTED
         self.queue[index]['starttime'] = datetime.now()
         self.UIqueue[index]['formStarttime'] = self.queue[index]['starttime']
+        self.UIqueue[index]['success'] = False
         curr_task = self.queue[index]['taskType']
 
         try:
@@ -371,12 +373,14 @@ class WorkerThread(threading.Thread):
             tmp_dir = os.path.join(gettempdir(), 'calibre_web')
 
             if dl["name"].lower() not in constants.EXTENSIONS_UPLOAD:
-                    raise Exception(_("File extension '{ext}' is not allowed to be uploaded to this server".format(ext=dl["name"].lower())))
+                raise Exception(_("File extension '{ext}' is not allowed to be uploaded to this server".format(ext=dl["name"].lower())))
 
             if not os.path.isdir(tmp_dir):
                 os.mkdir(tmp_dir)
 
-            tmp_file_path = os.path.join(tmp_dir, dl["sha1"])
+            id = dl.get("sha1", None) or dl.get("md5", None) or uuid4()
+
+            tmp_file_path = os.path.join(tmp_dir, id)
             log.debug("Temporary file: %s", tmp_file_path)
 
             url = dl["url"]["web"]
@@ -385,7 +389,6 @@ class WorkerThread(threading.Thread):
             filename_root, file_extension = os.path.splitext(filename)
 
             self.queue[index]["results"] = {
-                "success": False, # Default to false, we'll update this at the end
                 "filepath": tmp_file_path,
                 "filename_root": filename_root,
                 "file_extension": file_extension
@@ -407,6 +410,7 @@ class WorkerThread(threading.Thread):
                         self.UIqueue[index]['progress'] = '{} %'.format(math.floor((downloaded / total) * 100))
 
             # Determine checksum
+            # todo: determine which hash the downloads have, and try all of them. If at least one works, then it's fine.
             md5 = hashlib.md5()
 
             with open(tmp_file_path, 'rb') as f:
@@ -420,7 +424,7 @@ class WorkerThread(threading.Thread):
             # if md5.hexdigest() != dl["md5"]:
             #     return self._handleError("Integrity check faailed after download")
 
-            self.queue[index]["results"]["success"] = True
+            self.queue[index]["success"] = True
             self._handleSuccess()
 
             # it's technically done, but the link portion needs these around still. We set these to started to avoid
@@ -446,9 +450,11 @@ class WorkerThread(threading.Thread):
         product_name = self.queue[index]['product_name']
 
         # find all the objects with these tasks
-        dl_tasks = [x for x in self.queue if x.get("id", None) in task_ids]
-        original_filename = dl_tasks[0]["results"]["filename_root"]
+        dl_tasks = [x for x in self.queue if x.get("id", None) in task_ids and x.get("success", None)]
+        if len(dl_tasks) == 0:
+            return self._handleError("No download tasks finished successfully")
 
+        original_filename = dl_tasks[0]["results"]["filename_root"]
 
         try:
             from .editbooks import add_book_to_db  # inline import to avoid circular import
@@ -766,7 +772,7 @@ class WorkerThread(threading.Thread):
         for x in download_info:
             self.id += 1
 
-            self.queue.append({'taskType': TASK_HB_DOWNLOAD, 'download_info': x, "id": self.id})
+            self.queue.append({'taskType': TASK_HB_DOWNLOAD, 'download_info': x, "id": self.id, "success": False})
             self.UIqueue.append({
                 'user': user_name,
                 'formStarttime': '',

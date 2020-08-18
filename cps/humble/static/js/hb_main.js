@@ -145,7 +145,7 @@ function submitBundles() {
             // we have successfully started a bundle download, clear out all our cached data
             localStorage.removeItem(HB_TASK_ID)
             localStorage.removeItem(HB_RESULTS)
-            $("#bundle_list").append(html)
+            $("#bundle_list").empty()
         },
         error: function() {
             // todo: show error on the page
