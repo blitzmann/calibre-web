@@ -19,6 +19,7 @@ let results = []
 
 $('#hb-progress').hide();
 $("#bundle_results").hide();
+$("#error_message").hide();
 
 let token = localStorage.getItem(HB_AUTH_TOKEN)
 if (token) {
@@ -154,11 +155,20 @@ function submitBundles() {
 
 }
 
+function updateProgressBar(percent){
+    // otherwise, update progress and keep checking
+    let el = $('#hb-progress > .progress-bar');
+    el.attr("aria-valuenow", percent);
+    el.text(percent + " %");
+    el.css("width", percent + "%");
+}
+
 // WTB SocketIO :(
 // Checks the status of the bundle-fetching task. If it's still in progress, calls itself after 1 second, otherwise
 // handles the results
 function doStatusCheck(task_id) {
     $("#humble_auth :input").prop("disabled", true); // disable the auth token form if we're asking for status
+
     $('#hb-progress').show(); // always show the progress bar if we're asking for task status
     localStorage.setItem(HB_TASK_ID, task_id)
 
@@ -172,7 +182,6 @@ function doStatusCheck(task_id) {
             url: HB_TASK_STATUS_API,
             success: function success(data) {
                 localStorage.removeItem(HB_TASK_ID)
-
                 if (data.status == "Finished") {
                     // todo: link this to a task
                     localStorage.setItem(HB_RESULTS, JSON.stringify(data.results))
@@ -185,20 +194,26 @@ function doStatusCheck(task_id) {
                     return
                 }
                 else if (data.status == "Failed") {
-                    // todo: display error message, and beg user for forgiveness
-                    $('#hb-progress').hide();
                     $("#humble_auth :input").prop("disabled", null);
 
+                    $('#hb-progress .progress-bar').addClass("progress-bar-danger");
                     localStorage.removeItem(HB_TASK_ID)
-                    return;
+
+                    $("#error_message").html("There was an error processing your orders. Please try again, or contact the administrator.")
+                    return $("#error_message").show();
+                } else {
+                    if (data.status != "Started") {
+
+                        $("#hb-progress .status").html(data.status);
+                        $("#hb-progress .status").show();
+
+                    } else {
+                        $("#hb-progress .status").html("");
+                    }
                 }
 
                 // otherwise, update progress and keep checking
-                let el = $('#hb-progress > .progress-bar');
-                let percent = parseInt(data.progress);
-                el.attr("aria-valuenow", percent);
-                el.text(data.progress);
-                el.css("width", percent + "%");
+                updateProgressBar(parseInt(data.progress))
 
                 setTimeout(doStatusCheck(task_id), 1000);
             },
@@ -213,10 +228,13 @@ function doStatusCheck(task_id) {
 // set up handling for submitting the auth token
 $("#humble_auth").submit(function (event) {
     event.preventDefault();
+    $("#error_message").hide() // clears any previous error
     let token = $("#humble_auth input[name=auth_token]").val();
 
-    // todo: only do this if a checkbox is checked that says to save it
-    localStorage.setItem(HB_AUTH_TOKEN, token)
+    // remove previous results if we have any
+    localStorage.removeItem(HB_RESULTS);
+    $("#bundle_list").hide();
+    $("#bundle_results").hide();
 
     $.ajax({
         method: "POST",
@@ -226,15 +244,21 @@ $("#humble_auth").submit(function (event) {
         contentType: "application/json",
         url: HB_ORDERS_API,
         success: function success(data) {
+            if (!data.success) {
+                $("#error_message").html(data.error)
+                return $("#error_message").show();
+            }
 
-            $('#hb-progress').show();
-            $("#bundle_list").hide();
-            $("#bundle_results").hide();
+            // todo: only do this if a checkbox is checked that says to save it
+            localStorage.setItem(HB_AUTH_TOKEN, token)
 
+            $('#hb-progress .progress-bar').removeClass("progress-bar-danger");
+            updateProgressBar(0)
             setTimeout(doStatusCheck(data.task_id), 1000);
         },
-        error: function(){
-            // todo: display error
+        error: function() {
+            $("#error_message").html("There was an unknown error fetching your orders.")
+            $("#error_message").show();
         }
     });
 });

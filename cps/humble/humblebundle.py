@@ -73,10 +73,21 @@ def get_orders():
     }
 
     # todo: actually handle a bad token coming in. This won't just #yoloFail for us :S
-    orders = requests.get('https://www.humblebundle.com/api/v1/user/order?ajax=true', headers=headers, cookies=cookies).json()
+    orders = requests.get('https://www.humblebundle.com/api/v1/user/order?ajax=true', headers=headers, cookies=cookies)
+
+    if orders.status_code == 401:
+        return jsonify({"success": False, "error": "Authentication error. Double check token and try again."})
+    if not orders.ok:
+        log.error("Error getting orders. Status code: {}. Data: {}".format(orders.status_code, orders.json()))
+        return jsonify({"success": False, "error": "There was an unknown error getting."})
+
+    orders = orders.json()
 
     task_id = worker.hb_get_orders(current_user.nickname, data["auth"], orders)
-    return jsonify({"task_id": task_id})
+    return jsonify({
+        "task_id": task_id,
+        "success": True
+    })
 
 
 @humble.route("/")

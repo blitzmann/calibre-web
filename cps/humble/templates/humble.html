@@ -4,43 +4,47 @@
 {% endblock %}
 {% block body %}
 
-<div class="discover">
-    <h2>{{_('Humble Bundle Download')}}</h2>
-    <p>By default, all bundles in which an e-book is found, and all formats of those e-books, will be downloaded.</p>
-    <p>
-        At this time, there is no <strong>duplicate checking</strong> when downloading a bundle. This means that If a
-        bundle / book was already uploaded, there will be duplicate books in the system. This is annoying. Please check
-        to see if there's a tag for your bundle before selecting it for download.
-    </p>
-    <h3>Auth</h3>
-    <p>
-        Humble Bundle unfortunately doesn't offer a third party login system (known as OAuth, Single Sign On, etc).
-        In order for this application to access your books to download, it needs to know your authentication token,
-        which can be found by manually inspecting your browsers cookie information. This authentication token is only
-        used for getting your order bundle information - it's not used for downloading (the download links Humble
-        provides have a token attached to them already) and this this token is not stored.
-    </p>
-    <p>To find the authentication token:</p>
-    <dl>
-        <dt>Chrome</dt>
-        <dd>
-            After logging into Humble Bundle, open Dev Tools (F12) > Application > Cookies > www.humblebundle.com, and
-            look for the Cookie with the key of <code>_simpleauth_sess</code>. The value of this cookie is what you need.
-        </dd>
-    </dl>
-    <form id="humble_auth">
-        <div class="form-group">
-            <input class="form-control" name="auth_token" placeholder="Humble Bundle Authentication Token. Usually starts with `ey`"/>
-        </div>
-        <div class="form-group"><button class="btn btn-primary" type="submit">Fetch Bundles</button></div>
-    </form>
-    <div class="progress" id="hb-progress">
-      <div class="progress-bar progress-bar-striped active" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" style="min-width: 2em;">
-        0 %
-      </div>
-    </div>
+ <style>
+        #error_message {
+            height: 34px;
+            border-radius: 10px;
+            line-height: 1.71428571 !important;
+            font-size: 14px;
+            padding: 5px;
+        }
 
-    <style>
+        body:not(.blur) #error_message {
+            color: #a94442;
+            background-color: #f2dede;
+            border-color: #ebccd1;
+        }
+
+        form#humble_auth .buttons {
+            display: flex;
+            align-items: center;
+        }
+        form#humble_auth .buttons button {
+            margin-right: 15px;
+        }
+
+        dl dt {
+            font-weight: bold;
+        }
+        dl dd {
+            margin-left: 30px;
+        }
+
+        #hb-progress {
+            position: relative;
+        }
+
+        #hb-progress .status {
+            position: absolute;
+            right: 14px;
+            mix-blend-mode: difference;
+            top: -2px;
+        }
+
         .book-row {
             display: flex;
             flex-direction: row;
@@ -79,6 +83,29 @@
         }
 
         /* caliBlur! theme */
+
+        /* Fix the heading */
+        body.blur.admin > div.container-fluid > div > div.col-sm-10 > div.container-fluid > div.row:first-of-type > div.col > h2:before, body.admin > div.container-fluid > div > div.col-sm-10 > div.discover > h2:first-of-type:before {
+            content: "Humble Bundle Download";
+            position: fixed;
+            left: 240px
+        }
+        body.blur h2.heading {
+            color: transparent !important;
+            height: 0px !important;
+            margin: 0;
+        }
+
+        body.blur #error_message {
+            background-color: rgba(255, 85, 51, .3);
+            color: #fff;
+            height: 34px;
+            border-radius: 10px;
+            line-height: 1.71428571 !important;
+            font-size: 14px;
+            padding: 5px;
+        }
+
         body.blur .book-row:last-child {
             border-bottom: 1px solid rgba(0, 0, 0, .3);
         }
@@ -96,6 +123,48 @@
             border-color: var(--color-secondary);
         }
     </style>
+
+<div class="discover">
+    <h2 class="heading">{{_('Humble Bundle Download')}}</h2>
+    <p>By default, all bundles in which an e-book is found, and all formats of those e-books, will be downloaded.</p>
+    <p>
+        At this time, there is no <strong>duplicate checking</strong> when downloading a bundle. This means that If a
+        bundle / book was already uploaded, there will be duplicate books in the system. This is annoying. Please check
+        to see if there's a tag for your bundle before selecting it for download.
+    </p>
+    <h3>Auth</h3>
+    <p>
+        Humble Bundle unfortunately doesn't offer a third party login system (known as OAuth, Single Sign On, etc).
+        In order for this application to access your books to download, it needs to know your authentication token,
+        which can be found by manually inspecting your browsers cookie information. This authentication token is only
+        used for getting your order bundle information - it's not used for downloading (the download links Humble
+        provides have a token attached to them already) and this this token is not stored.
+    </p>
+    <p>To find the authentication token:</p>
+    <dl>
+        <dt>Chrome</dt>
+        <dd>
+            After logging into Humble Bundle, open Dev Tools (F12) > Application > Cookies > www.humblebundle.com, and
+            look for the Cookie with the key of <code>_simpleauth_sess</code>. The value of this cookie is what you need.
+        </dd>
+    </dl>
+    <form id="humble_auth">
+        <div class="form-group">
+            <input class="form-control" name="auth_token" placeholder="Humble Bundle Authentication Token. Usually starts with `ey`"/>
+        </div>
+        <div class="form-group buttons">
+            <button class="btn btn-primary" type="submit">Fetch Bundles</button>
+            <div id="error_message"></div>
+        </div>
+    </form>
+    <div class="progress" id="hb-progress">
+      <div class="progress-bar progress-bar-striped active" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" style="min-width: 2em;">
+        0 %
+      </div>
+      <span class="status"></span>
+    </div>
+
+
     <div id="bundle_results">
         <div class="panel-group" role="tablist" aria-multiselectable="true" id="bundle_list"></div>
         <div class="form-group"><button class="btn btn-primary" onclick="submitBundles()">Submit Bundles</button></div>
