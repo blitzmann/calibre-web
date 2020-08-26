@@ -6,6 +6,9 @@ from flask_login import current_user
 
 from flask import Blueprint, jsonify, flash, request, redirect, url_for, abort, render_template
 from cps import worker
+from cps.humble.tasks.download import TaskDownloadBooks
+from cps.humble.tasks.linker import TaskDownloadLinker
+from cps.humble.tasks.orders import TaskGetOrders
 from cps.worker import STAT_WAITING, STAT_FAIL, STAT_STARTED, STAT_FINISH_SUCCESS
 from cps.helper import localize_task_status
 
@@ -14,7 +17,8 @@ try:
 except ImportError:
     pass
 
-from cps import logger, config, ub, calibre_db
+from cps import logger
+from cps.services.worker import WorkerThread
 from cps.web import admin_required, render_title_template
 
 humble = Blueprint('humble', __name__, template_folder='templates', static_folder='static')
@@ -34,10 +38,10 @@ def normalizeFormat(format):
 
 @humble.route("/ajax/task/progress", methods=['POST'])
 def get_task_status():
-    tasks = worker.get_taskstatus()
+    tasks = WorkerThread.getInstance().tasks
     data = request.get_json()
 
-    task = next(filter(lambda x: x["id"] == data["task_id"], tasks))
+    task = next(filter(lambda x: x.id == data["task_id"], tasks))
 
     if task is None:
         abort(404)
@@ -54,8 +58,36 @@ def get_task_status():
 def submit_downloads():
     data = request.get_json()
     for bundle in data:
+        bundle_name = bundle["name"]
         for product in bundle["products"]:
-            worker.add_hb_download(current_user.nickname, bundle["name"], product["name"], product["downloads"])
+            product_name = product["name"]
+            task_ids = []
+
+            for download_info in product["downloads"]:
+                task = TaskDownloadBooks(
+                    task_message='{book_title} ({size} {format}) [{bundle_name}]'.format(
+                        book_title=(product_name[:70] + '...') if len(product_name) > 70 else product_name,
+                        size=download_info["human_size"],
+                        format=download_info["name"],
+                        bundle_name=bundle_name),
+                    bundle_name=bundle_name,
+                    product_name=product_name,
+                    download_info=download_info
+                )
+
+                task_ids.append(task.id)
+                WorkerThread.add(current_user.nickname, task)
+
+            # Here we create a special task that takes the download tasks and gathers the meta about them and links them under one book
+            WorkerThread.add(current_user.nickname, TaskDownloadLinker(
+                task_message='{book_title} [{bundle_name}]'.format(
+                    book_title=(product_name[:70] + '...') if len(product_name) > 70 else product_name,
+                    bundle_name=bundle_name
+                ),
+                bundle_name=bundle_name,
+                product_name=product_name,
+                tasks=task_ids
+            ))
     return jsonify({"sucess": True})
 
 @humble.route("/ajax/orders", methods=['POST'])
@@ -83,9 +115,10 @@ def get_orders():
 
     orders = orders.json()
 
-    task_id = worker.hb_get_orders(current_user.nickname, data["auth"], orders)
+    task = TaskGetOrders(data["auth"], orders)
+    WorkerThread.add(current_user.nickname, task)
     return jsonify({
-        "task_id": task_id,
+        "task_id": task.id,
         "success": True
     })
 
