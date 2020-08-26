@@ -21,7 +21,6 @@ from __future__ import division, print_function, unicode_literals
 import sys
 import os
 import io
-import json
 import mimetypes
 import re
 import shutil
@@ -36,10 +35,11 @@ from babel.units import format_unit
 from flask import send_from_directory, make_response, redirect, abort
 from flask_babel import gettext as _
 from flask_login import current_user
-from sqlalchemy.sql.expression import true, false, and_, or_, text, func
+from sqlalchemy.sql.expression import true, false, and_, text, func
 from werkzeug.datastructures import Headers
 from werkzeug.security import generate_password_hash
 from . import calibre_db
+from .tasks.convert import TaskConvert
 
 try:
     from urllib.parse import quote
@@ -59,13 +59,12 @@ try:
 except ImportError:
     use_PIL = False
 
-from . import logger, config, get_locale, db, ub, isoLanguages, worker
+from . import logger, config, get_locale, db, ub
 from . import gdriveutils as gd
 from .constants import STATIC_DIR as _STATIC_DIR
-from .pagination import Pagination
 from .subproc_wrapper import process_wait
-from .worker import STAT_WAITING, STAT_FAIL, STAT_STARTED, STAT_FINISH_SUCCESS, TASK_HB_DOWNLOAD, TASK_HB_LINK
-from .worker import TASK_EMAIL, TASK_CONVERT, TASK_UPLOAD, TASK_CONVERT_ANY
+from .services.worker import WorkerThread, STAT_WAITING, STAT_FAIL, STAT_STARTED, STAT_FINISH_SUCCESS
+from .tasks.email import TaskEmail
 
 
 log = logger.create()
@@ -103,7 +102,7 @@ def convert_book_format(book_id, calibrepath, old_book_format, new_book_format, 
         text = (u"%s -> %s: %s" % (old_book_format, new_book_format, book.title))
         settings['old_book_format'] = old_book_format
         settings['new_book_format'] = new_book_format
-        worker.add_convert(file_path, book.id, user_id, text, settings, kindle_mail)
+        WorkerThread.add(user_id, TaskConvert(file_path, book.id, text, settings, kindle_mail))
         return None
     else:
         error_message = _(u"%(format)s not found: %(fn)s",
@@ -112,9 +111,9 @@ def convert_book_format(book_id, calibrepath, old_book_format, new_book_format, 
 
 
 def send_test_mail(kindle_mail, user_name):
-    worker.add_email(_(u'Calibre-Web test e-mail'), None, None,
-                     config.get_mail_settings(), kindle_mail, user_name,
-                     _(u"Test e-mail"), _(u'This e-mail has been sent via Calibre-Web.'))
+    WorkerThread.add(user_name, TaskEmail(_(u'Calibre-Web test e-mail'), None, None,
+                     config.get_mail_settings(), kindle_mail, _(u"Test e-mail"),
+                               _(u'This e-mail has been sent via Calibre-Web.')))
     return
 
 
@@ -129,9 +128,16 @@ def send_registration_mail(e_mail, user_name, default_password, resend=False):
     text += "Don't forget to change your password after first login.\r\n"
     text += "Sincerely\r\n\r\n"
     text += "Your Calibre-Web team"
-    worker.add_email(_(u'Get Started with Calibre-Web'), None, None,
-                     config.get_mail_settings(), e_mail, None,
-                     _(u"Registration e-mail for user: %(name)s", name=user_name), text)
+    WorkerThread.add(None, TaskEmail(
+        subject=(u'Get Started with Calibre-Web'),
+        filepath=None,
+        attachment=None,
+        settings=config.get_mail_settings(),
+        recipient=e_mail,
+        taskMessage=_(u"Registration e-mail for user: %(name)s", name=user_name),
+        text=text
+    ))
+
     return
 
 
@@ -223,9 +229,9 @@ def send_mail(book_id, book_format, convert, kindle_mail, calibrepath, user_id):
     for entry in iter(book.data):
         if entry.format.upper() == book_format.upper():
             converted_file_name = entry.name + '.' + book_format.lower()
-            worker.add_email(_(u"Send to Kindle"), book.path, converted_file_name,
-                             config.get_mail_settings(), kindle_mail, user_id,
-                             _(u"E-mail: %(book)s", book=book.title), _(u'This e-mail has been sent via Calibre-Web.'))
+            WorkerThread.add(user_id, TaskEmail(_(u"Send to Kindle"), book.path, converted_file_name,
+                             config.get_mail_settings(), kindle_mail,
+                             _(u"E-mail: %(book)s", book=book.title), _(u'This e-mail has been sent via Calibre-Web.')))
             return
     return _(u"The requested file could not be read. Maybe wrong permissions?")
 
@@ -239,21 +245,21 @@ def get_valid_filename(value, replace_whitespace=True):
         value = value[:-1]+u'_'
     value = value.replace("/", "_").replace(":", "_").strip('\0')
     if use_unidecode:
-        value = (unidecode.unidecode(value)).strip()
+        value = (unidecode.unidecode(value))
     else:
         value = value.replace(u'§', u'SS')
         value = value.replace(u'ß', u'ss')
         value = unicodedata.normalize('NFKD', value)
         re_slugify = re.compile(r'[\W\s-]', re.UNICODE)
         if isinstance(value, str):  # Python3 str, Python2 unicode
-            value = re_slugify.sub('', value).strip()
+            value = re_slugify.sub('', value)
         else:
-            value = unicode(re_slugify.sub('', value).strip())
+            value = unicode(re_slugify.sub('', value))
     if replace_whitespace:
         #  *+:\"/<>? are replaced by _
-        value = re.sub(r'[\*\+:\\\"/<>\?]+', u'_', value, flags=re.U)
+        value = re.sub(r'[*+:\\\"/<>?]+', u'_', value, flags=re.U)
         # pipe has to be replaced with comma
-        value = re.sub(r'[\|]+', u',', value, flags=re.U)
+        value = re.sub(r'[|]+', u',', value, flags=re.U)
     value = value[:128].strip()
     if not value:
         raise ValueError("Filename cannot be empty")
@@ -263,6 +269,22 @@ def get_valid_filename(value, replace_whitespace=True):
         return value.decode('utf-8')
 
 
+def split_authors(values):
+    authors_list = []
+    for value in values:
+        authors = re.split('[&;]', value)
+        for author in authors:
+            commas = author.count(',')
+            if commas == 1:
+                author_split = author.split(',')
+                authors_list.append(author_split[1].strip() + ' ' + author_split[0].strip())
+            elif commas > 1:
+                authors_list.extend([x.strip() for x in author.split(',')])
+            else:
+                authors_list.append(author.strip())
+    return authors_list
+
+
 def get_sorted_author(value):
     try:
         if ',' not in value:
@@ -270,7 +292,10 @@ def get_sorted_author(value):
             combined = "(" + ")|(".join(regexes) + ")"
             value = value.split(" ")
             if re.match(combined, value[-1].upper()):
-                value2 = value[-2] + ", " + " ".join(value[:-2]) + " " + value[-1]
+                if len(value) > 1:
+                    value2 = value[-2] + ", " + " ".join(value[:-2]) + " " + value[-1]
+                else:
+                    value2 = value[0]
             elif len(value) == 1:
                 value2 = value[0]
             else:
@@ -279,7 +304,10 @@ def get_sorted_author(value):
             value2 = value
     except Exception as ex:
         log.error("Sorting author %s failed: %s", value, ex)
-        value2 = value
+        if isinstance(list, value2):
+            value2 = value[0]
+        else:
+            value2 = value
     return value2
 
 
@@ -303,8 +331,8 @@ def delete_book_file(book, calibrepath, book_format=None):
                             log.warning("Deleting book {} failed, path {} has subfolders: {}".format(book.id,
                                         book.path, folders))
                             return True, _("Deleting bookfolder for book %(id)s failed, path has subfolders: %(path)s",
-                                            id=book.id,
-                                            path=book.path)
+                                           id=book.id,
+                                           path=book.path)
                     shutil.rmtree(path)
                 except (IOError, OSError) as e:
                     log.error("Deleting book %s failed: %s", book.id, e)
@@ -319,8 +347,8 @@ def delete_book_file(book, calibrepath, book_format=None):
             else:
                 log.error("Deleting book %s failed, book path not valid: %s", book.id, book.path)
                 return True, _("Deleting book %(id)s, book path not valid: %(path)s",
-                                     id=book.id,
-                                     path=book.path)
+                               id=book.id,
+                               path=book.path)
 
 
 def update_dir_structure_file(book_id, calibrepath, first_author):
@@ -366,6 +394,7 @@ def update_dir_structure_file(book_id, calibrepath, first_author):
                      src=path, dest=new_author_path, error=str(ex))
     # Rename all files from old names to new names
     if authordir != new_authordir or titledir != new_titledir:
+        new_name = ""
         try:
             new_name = get_valid_filename(localbook.title) + ' - ' + get_valid_filename(new_authordir)
             path_name = os.path.join(calibrepath, new_authordir, os.path.basename(path))
@@ -474,14 +503,14 @@ def generate_random_password():
         return "".join(s[c % len(s)] for c in os.urandom(passlen))
 
 
-def uniq(input):
-  output = []
-  for x in input:
-    if x not in output:
-      output.append(x)
-  return output
+def uniq(inpt):
+    output = []
+    for x in inpt:
+        if x not in output:
+            output.append(x)
+    return output
 
-################################## External interface
+# ################################# External interface #################################
 
 
 def update_dir_stucture(book_id, calibrepath, first_author=None):
@@ -558,7 +587,6 @@ def save_cover_from_url(url, book_path):
         return False, _("Cover Format Error")
 
 
-
 def save_cover_from_filestorage(filepath, saved_filename, img):
     if hasattr(img, '_content'):
         f = open(os.path.join(filepath, saved_filename), "wb")
@@ -615,7 +643,6 @@ def save_cover(img, book_path):
             return False, message
     else:
         return save_cover_from_filestorage(os.path.join(config.config_calibre_dir, book_path), "cover.jpg", img)
-
 
 
 def do_download_file(book, book_format, client, data, headers):
@@ -716,41 +743,20 @@ def localize_task_status(stat):
 # helper function to apply localize status information in tasklist entries
 def render_task_status(tasklist):
     renderedtasklist = list()
-    for task in tasklist:
-        if task['user'] == current_user.nickname or current_user.role_admin():
-            if task['formStarttime']:
-                task['starttime'] = format_datetime(task['formStarttime'], format='short', locale=get_locale())
-            # task2['formStarttime'] = ""
-            else:
-                if 'starttime' not in task:
-                    task['starttime'] = ""
-
-            if 'formRuntime' not in task:
-                task['runtime'] = ""
-            else:
-                task['runtime'] = format_runtime(task['formRuntime'])
+    for user, added, task in tasklist:
+        if user == current_user.nickname or current_user.role_admin():
+            ret = {}
+            if task.start_time:
+                ret['starttime'] = format_datetime(task.start_time, format='short', locale=get_locale())
+                ret['runtime'] = format_runtime(task.runtime)
 
             # localize the task status
             task['status'] = localize_task_status(task['stat'])
 
-            # localize the task type
-            if isinstance( task['taskType'], int):
-                if task['taskType'] == TASK_EMAIL:
-                    task['taskMessage'] = _(u'E-mail: ') + task['taskMess']
-                elif task['taskType'] == TASK_CONVERT:
-                    task['taskMessage'] = _(u'Convert: ') + task['taskMess']
-                elif task['taskType'] == TASK_UPLOAD:
-                    task['taskMessage'] = _(u'Upload: ') + task['taskMess']
-                elif task['taskType'] == TASK_HB_DOWNLOAD:
-                    task['taskMessage'] = _(u'Humble Download: ') + task['taskMess']
-                elif task['taskType'] == TASK_HB_LINK:
-                    task['taskMessage'] = _(u'Humble Processing / Linking: ') + task['taskMess']
-                elif task['taskType'] == TASK_CONVERT_ANY:
-                    task['taskMessage'] = _(u'Convert: ') + task['taskMess']
-                else:
-                    task['taskMessage'] = _(u'Unknown Task: ') + task['taskMess']
-
-            renderedtasklist.append(task)
+            ret['taskMessage'] = "{}: {}".format(_(task.name), task.message)
+            ret['progress'] = "{} %".format(int(task.progress * 100))
+            ret['user'] = user
+            renderedtasklist.append(ret)
 
     return renderedtasklist
 
@@ -793,6 +799,7 @@ def get_cc_columns(filter_config_custom_read=False):
         cc.append(col)
 
     return cc
+
 
 def get_download_link(book_id, book_format, client):
     book_format = book_format.split(".")[0]

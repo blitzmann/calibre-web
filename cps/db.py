@@ -24,18 +24,17 @@ import re
 import ast
 import json
 from datetime import datetime
-import threading
-from uuid import uuid4
 
 from sqlalchemy import create_engine
 from sqlalchemy import Table, Column, ForeignKey, CheckConstraint
 from sqlalchemy import String, Integer, Boolean, TIMESTAMP, Float
 from sqlalchemy.orm import relationship, sessionmaker, scoped_session
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm.collections import InstrumentedList
+from sqlalchemy.ext.declarative import declarative_base, DeclarativeMeta
 from sqlalchemy.pool import StaticPool
 from flask_login import current_user
 from sqlalchemy.sql.expression import and_, true, false, text, func, or_
+from sqlalchemy.ext.associationproxy import association_proxy
 from babel import Locale as LC
 from babel.core import UnknownLocaleError
 from flask_babel import gettext as _
@@ -99,6 +98,9 @@ class Identifiers(Base):
         self.type = id_type
         self.book = book
 
+    #def get(self):
+    #    return {self.type: self.val}
+
     def formatType(self):
         if self.type == "amazon":
             return u"Amazon"
@@ -151,6 +153,9 @@ class Comments(Base):
         self.text = text
         self.book = book
 
+    def get(self):
+        return self.text
+
     def __repr__(self):
         return u"<Comments({0})>".format(self.text)
 
@@ -163,6 +168,9 @@ class Tags(Base):
 
     def __init__(self, name):
         self.name = name
+
+    def get(self):
+        return self.name
 
     def __repr__(self):
         return u"<Tags('{0})>".format(self.name)
@@ -181,6 +189,9 @@ class Authors(Base):
         self.sort = sort
         self.link = link
 
+    def get(self):
+        return self.name
+
     def __repr__(self):
         return u"<Authors('{0},{1}{2}')>".format(self.name, self.sort, self.link)
 
@@ -196,6 +207,9 @@ class Series(Base):
         self.name = name
         self.sort = sort
 
+    def get(self):
+        return self.name
+
     def __repr__(self):
         return u"<Series('{0},{1}')>".format(self.name, self.sort)
 
@@ -209,6 +223,9 @@ class Ratings(Base):
     def __init__(self, rating):
         self.rating = rating
 
+    def get(self):
+        return self.rating
+
     def __repr__(self):
         return u"<Ratings('{0}')>".format(self.rating)
 
@@ -221,6 +238,12 @@ class Languages(Base):
 
     def __init__(self, lang_code):
         self.lang_code = lang_code
+
+    def get(self):
+        if self.language_name:
+            return self.language_name
+        else:
+            return self.lang_code
 
     def __repr__(self):
         return u"<Languages('{0}')>".format(self.lang_code)
@@ -236,6 +259,9 @@ class Publishers(Base):
     def __init__(self, name, sort):
         self.name = name
         self.sort = sort
+
+    def get(self):
+        return self.name
 
     def __repr__(self):
         return u"<Publishers('{0},{1}')>".format(self.name, self.sort)
@@ -257,6 +283,10 @@ class Data(Base):
         self.uncompressed_size = uncompressed_size
         self.name = name
 
+    # ToDo: Check
+    def get(self):
+        return self.name
+
     def __repr__(self):
         return u"<Data('{0},{1}{2}{3}')>".format(self.book, self.format, self.uncompressed_size, self.name)
 
@@ -264,14 +294,14 @@ class Data(Base):
 class Books(Base):
     __tablename__ = 'books'
 
-    DEFAULT_PUBDATE = "0101-01-01 00:00:00+00:00"
+    DEFAULT_PUBDATE = datetime(101, 1, 1, 0, 0, 0, 0) # ("0101-01-01 00:00:00+00:00")
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     title = Column(String(collation='NOCASE'), nullable=False, default='Unknown')
     sort = Column(String(collation='NOCASE'))
     author_sort = Column(String(collation='NOCASE'))
     timestamp = Column(TIMESTAMP, default=datetime.utcnow)
-    pubdate = Column(String) # , default=datetime.utcnow)
+    pubdate = Column(TIMESTAMP, default=DEFAULT_PUBDATE)
     series_index = Column(String, nullable=False, default="1.0")
     last_modified = Column(TIMESTAMP, default=datetime.utcnow)
     path = Column(String, default="", nullable=False)
@@ -282,7 +312,7 @@ class Books(Base):
     flags = Column(Integer, nullable=False, default=1)
 
     authors = relationship('Authors', secondary=books_authors_link, backref='books')
-    tags = relationship('Tags', secondary=books_tags_link, backref='books',order_by="Tags.name")
+    tags = relationship('Tags', secondary=books_tags_link, backref='books', order_by="Tags.name")
     comments = relationship('Comments', backref='books')
     data = relationship('Data', backref='books')
     series = relationship('Series', secondary=books_series_link, backref='books')
@@ -302,6 +332,9 @@ class Books(Base):
         self.last_modified = last_modified
         self.path = path
         self.has_cover = has_cover
+
+    #def as_dict(self):
+    #    return {c.name: getattr(self, c.name) for c in self.__table__.columns}
 
     def __repr__(self):
         return u"<Books('{0},{1}{2}{3}{4}{5}{6}{7}{8}')>".format(self.title, self.sort, self.author_sort,
@@ -331,48 +364,51 @@ class Custom_Columns(Base):
             display_dict['enum_values'] = [x.decode('unicode_escape') for x in display_dict['enum_values']]
         return display_dict
 
+class AlchemyEncoder(json.JSONEncoder):
 
-class CalibreDB(threading.Thread):
+    def default(self, obj):
+        if isinstance(obj.__class__, DeclarativeMeta):
+            # an SQLAlchemy class
+            fields = {}
+            for field in [x for x in dir(obj) if not x.startswith('_') and x != 'metadata']:
+                if field == 'books':
+                    continue
+                data = obj.__getattribute__(field)
+                try:
+                    if isinstance(data, str):
+                        data = data.replace("'","\'")
+                    elif isinstance(data, InstrumentedList):
+                        el =list()
+                        for ele in data:
+                            if ele.get:
+                                el.append(ele.get())
+                            else:
+                                el.append(json.dumps(ele, cls=AlchemyEncoder))
+                        data =",".join(el)
+                        if data == '[]':
+                            data = ""
+                    else:
+                        json.dumps(data)
+                    fields[field] = data
+                except:
+                    fields[field] = ""
+            # a json-encodable dict
+            return fields
+
+        return json.JSONEncoder.default(self, obj)
+
+
+class CalibreDB():
 
     def __init__(self):
-        threading.Thread.__init__(self)
         self.engine = None
         self.session = None
-        self.queue = None
         self.log = None
         self.config = None
-
-    def add_queue(self,queue):
-        self.queue = queue
-        self.log = logger.create()
-
-    def run(self):
-        while True:
-            i = self.queue.get()
-            if i == 'dummy':
-                self.queue.task_done()
-                break
-            if i['task'] == 'add_format':
-                cur_book = self.session.query(Books).filter(Books.id == i['id']).first()
-                cur_book.data.append(i['format'])
-                try:
-                    # db.session.merge(cur_book)
-                    self.session.commit()
-                except OperationalError as e:
-                    self.session.rollback()
-                    self.log.error("Database error: %s", e)
-                    # self._handleError(_(u"Database error: %(error)s.", error=e))
-                    # return
-            self.queue.task_done()
-
-
-    def stop(self):
-        self.queue.put('dummy')
 
     def setup_db(self, config, app_db_path):
         self.config = config
         self.dispose()
-        # global engine
 
         if not config.config_calibre_dir:
             config.invalidate()
@@ -384,7 +420,6 @@ class CalibreDB(threading.Thread):
             return False
 
         try:
-            #engine = create_engine('sqlite:///{0}'.format(dbpath),
             self.engine = create_engine('sqlite://',
                                    echo=False,
                                    isolation_level="SERIALIZABLE",
@@ -409,34 +444,46 @@ class CalibreDB(threading.Thread):
             books_custom_column_links = {}
             for row in cc:
                 if row.datatype not in cc_exceptions:
-                    books_custom_column_links[row.id] = Table('books_custom_column_' + str(row.id) + '_link', Base.metadata,
-                                                              Column('book', Integer, ForeignKey('books.id'),
-                                                                     primary_key=True),
-                                                              Column('value', Integer,
-                                                                     ForeignKey('custom_column_' + str(row.id) + '.id'),
-                                                                     primary_key=True)
-                                                              )
-                    cc_ids.append([row.id, row.datatype])
-                    if row.datatype == 'bool':
-                        ccdict = {'__tablename__': 'custom_column_' + str(row.id),
-                                  'id': Column(Integer, primary_key=True),
-                                  'book': Column(Integer, ForeignKey('books.id')),
-                                  'value': Column(Boolean)}
-                    elif row.datatype == 'int':
-                        ccdict = {'__tablename__': 'custom_column_' + str(row.id),
-                                  'id': Column(Integer, primary_key=True),
-                                  'book': Column(Integer, ForeignKey('books.id')),
-                                  'value': Column(Integer)}
-                    elif row.datatype == 'float':
-                        ccdict = {'__tablename__': 'custom_column_' + str(row.id),
-                                  'id': Column(Integer, primary_key=True),
-                                  'book': Column(Integer, ForeignKey('books.id')),
-                                  'value': Column(Float)}
+                    if row.datatype == 'series':
+                        dicttable = {'__tablename__': 'books_custom_column_' + str(row.id) + '_link',
+                                     'id': Column(Integer, primary_key=True),
+                                     'book': Column(Integer, ForeignKey('books.id'),
+                                                    primary_key=True),
+                                     'map_value': Column('value', Integer,
+                                                     ForeignKey('custom_column_' +
+                                                                str(row.id) + '.id'),
+                                                     primary_key=True),
+                                     'extra': Column(Float),
+                                     'asoc' : relationship('custom_column_' + str(row.id), uselist=False),
+                                     'value' : association_proxy('asoc', 'value')
+                                     }
+                        books_custom_column_links[row.id] = type(str('books_custom_column_' + str(row.id) + '_link'),
+                                                                 (Base,), dicttable)
                     else:
-                        ccdict = {'__tablename__': 'custom_column_' + str(row.id),
-                                  'id': Column(Integer, primary_key=True),
-                                  'value': Column(String)}
-                    cc_classes[row.id] = type(str('Custom_Column_' + str(row.id)), (Base,), ccdict)
+                        books_custom_column_links[row.id] = Table('books_custom_column_' + str(row.id) + '_link',
+                                                                  Base.metadata,
+                                                                  Column('book', Integer, ForeignKey('books.id'),
+                                                                         primary_key=True),
+                                                                  Column('value', Integer,
+                                                                         ForeignKey('custom_column_' +
+                                                                                    str(row.id) + '.id'),
+                                                                         primary_key=True)
+                                                                  )
+                    cc_ids.append([row.id, row.datatype])
+
+                    ccdict = {'__tablename__': 'custom_column_' + str(row.id),
+                              'id': Column(Integer, primary_key=True)}
+                    if row.datatype == 'float':
+                        ccdict['value'] = Column(Float)
+                    elif row.datatype == 'int':
+                        ccdict['value'] = Column(Integer)
+                    elif row.datatype == 'bool':
+                        ccdict['value'] = Column(Boolean)
+                    else:
+                        ccdict['value'] = Column(String)
+                    if row.datatype in ['float', 'int', 'bool']:
+                        ccdict['book'] = Column(Integer, ForeignKey('books.id'))
+                    cc_classes[row.id] = type(str('custom_column_' + str(row.id)), (Base,), ccdict)
 
             for cc_id in cc_ids:
                 if (cc_id[1] == 'bool') or (cc_id[1] == 'int') or (cc_id[1] == 'float'):
@@ -445,6 +492,11 @@ class CalibreDB(threading.Thread):
                             relationship(cc_classes[cc_id[0]],
                                          primaryjoin=(
                                          Books.id == cc_classes[cc_id[0]].book),
+                                         backref='books'))
+                elif (cc_id[1] == 'series'):
+                    setattr(Books,
+                            'custom_column_' + str(cc_id[0]),
+                            relationship(books_custom_column_links[cc_id[0]],
                                          backref='books'))
                 else:
                     setattr(Books,
@@ -510,10 +562,11 @@ class CalibreDB(threading.Thread):
                     pos_content_cc_filter, ~neg_content_cc_filter, archived_filter)
 
     # Fill indexpage with all requested data from database
-    def fill_indexpage(self, page, database, db_filter, order, *join):
-        return self.fill_indexpage_with_archived_books(page, database, db_filter, order, False, *join)
+    def fill_indexpage(self, page, pagesize, database, db_filter, order, *join):
+        return self.fill_indexpage_with_archived_books(page, pagesize, database, db_filter, order, False, *join)
 
-    def fill_indexpage_with_archived_books(self, page, database, db_filter, order, allow_show_archived, *join):
+    def fill_indexpage_with_archived_books(self, page, pagesize, database, db_filter, order, allow_show_archived, *join):
+        pagesize = pagesize or self.config.config_books_per_page
         if current_user.show_detail_random():
             randm = self.session.query(Books) \
                 .filter(self.common_filters(allow_show_archived)) \
@@ -521,14 +574,14 @@ class CalibreDB(threading.Thread):
                 .limit(self.config.config_random_books)
         else:
             randm = false()
-        off = int(int(self.config.config_books_per_page) * (page - 1))
+        off = int(int(pagesize) * (page - 1))
         query = self.session.query(database) \
             .join(*join, isouter=True) \
             .filter(db_filter) \
             .filter(self.common_filters(allow_show_archived))
-        pagination = Pagination(page, self.config.config_books_per_page,
+        pagination = Pagination(page, pagesize,
                                 len(query.all()))
-        entries = query.order_by(*order).offset(off).limit(self.config.config_books_per_page).all()
+        entries = query.order_by(*order).offset(off).limit(pagesize).all()
         for book in entries:
             book = self.order_authors(book)
         return entries, randm, pagination
@@ -568,20 +621,26 @@ class CalibreDB(threading.Thread):
             .filter(and_(Books.authors.any(and_(*q)), func.lower(Books.title).ilike("%" + title + "%"))).first()
 
     # read search results from calibre-database and return it (function is used for feed and simple search
-    def get_search_results(self, term):
+    def get_search_results(self, term, offset=None, order=None, limit=None):
+        order = order or [Books.sort]
+        if offset != None and limit != None:
+            offset = int(offset)
+            limit = offset + int(limit)
         term.strip().lower()
         self.session.connection().connection.connection.create_function("lower", 1, lcase)
         q = list()
         authorterms = re.split("[, ]+", term)
         for authorterm in authorterms:
             q.append(Books.authors.any(func.lower(Authors.name).ilike("%" + authorterm + "%")))
-        return self.session.query(Books).filter(self.common_filters(True)).filter(
+        result = self.session.query(Books).filter(self.common_filters(True)).filter(
             or_(Books.tags.any(func.lower(Tags.name).ilike("%" + term + "%")),
                 Books.series.any(func.lower(Series.name).ilike("%" + term + "%")),
                 Books.authors.any(and_(*q)),
                 Books.publishers.any(func.lower(Publishers.name).ilike("%" + term + "%")),
                 func.lower(Books.title).ilike("%" + term + "%")
-                )).order_by(Books.sort).all()
+                )).order_by(*order).all()
+        result_count = len(result)
+        return result[offset:limit], result_count
 
     # Creates for all stored languages a translated speaking name in the array for the UI
     def speaking_language(self, languages=None):
