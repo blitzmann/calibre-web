@@ -9,7 +9,7 @@ from tempfile import gettempdir
 from cps import constants
 from cps.services.worker import CalibreTask
 from cps import logger
-from cps.worker import STAT_STARTED
+from cps.services.worker import STAT_STARTED
 
 log = logger.create()
 

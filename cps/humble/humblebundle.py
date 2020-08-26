@@ -4,12 +4,10 @@ import requests
 from flask_login import current_user
 
 
-from flask import Blueprint, jsonify, flash, request, redirect, url_for, abort, render_template
-from cps import worker
+from flask import Blueprint, jsonify, request, abort
 from cps.humble.tasks.download import TaskDownloadBooks
 from cps.humble.tasks.linker import TaskDownloadLinker
 from cps.humble.tasks.orders import TaskGetOrders
-from cps.worker import STAT_WAITING, STAT_FAIL, STAT_STARTED, STAT_FINISH_SUCCESS
 from cps.helper import localize_task_status
 
 try:
