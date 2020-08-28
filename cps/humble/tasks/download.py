@@ -6,10 +6,14 @@ from uuid import uuid4
 from urllib.parse import urlparse
 from tempfile import gettempdir
 
+from datetime import datetime, timedelta
+
 from cps import constants
 from cps.services.worker import CalibreTask
 from cps import logger
 from cps.services.worker import STAT_STARTED
+
+from .constants import TASK_RETENTION_MIN
 
 log = logger.create()
 
@@ -57,6 +61,7 @@ class TaskDownloadBooks(CalibreTask):
             # download file to temp location, complete with progress loop
             with open(tmp_file_path, 'wb') as f:
                 response = requests.get(dl["url"]["web"], stream=True)
+                # todo: if response fails (non 200) throw error
                 total = response.headers.get('content-length')
 
                 if total is None:
@@ -95,5 +100,16 @@ class TaskDownloadBooks(CalibreTask):
             self._handleError(str(e))
 
     @property
+    def dead(self):
+        orig_val = super(TaskDownloadBooks, self).dead
+
+        then = self.end_time
+        now = datetime.now()
+        return orig_val and now < then + timedelta(minutes=TASK_RETENTION_MIN)
+
+    @property
     def name(self):
-        return "Humble: Get Orders"
+        return "Humble: Download Book"
+
+    def __repr__(self):
+        return self.message

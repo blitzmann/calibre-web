@@ -44,8 +44,8 @@ if (results_str) {
 }
 
 // Process the raw bundle data from the server into DOM elements
-function processResults(results) {
-    results = results;
+function processResults(newResults) {
+    results = newResults;
     $("#bundle_list").empty()
     for (let bundle of results) {
         bundleIdx = results.indexOf(bundle)
@@ -145,7 +145,7 @@ function submitBundles() {
         success: function success(data) {
             // we have successfully started a bundle download, clear out all our cached data
             localStorage.removeItem(HB_TASK_ID)
-            localStorage.removeItem(HB_RESULTS)
+            //localStorage.removeItem(HB_RESULTS)
             $("#bundle_list").empty()
         },
         error: function() {
@@ -213,7 +213,7 @@ function doStatusCheck(task_id) {
                 }
 
                 // otherwise, update progress and keep checking
-                updateProgressBar(parseInt(data.progress))
+                updateProgressBar(parseInt(data.progress*100))
 
                 setTimeout(doStatusCheck(task_id), 1000);
             },

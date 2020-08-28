@@ -39,16 +39,16 @@ def get_task_status():
     tasks = WorkerThread.getInstance().tasks
     data = request.get_json()
 
-    task = next(filter(lambda x: x.id == data["task_id"], tasks))
+    queuedTask = next(filter(lambda x: str(x.task.id) == data["task_id"], tasks))
 
-    if task is None:
+    if queuedTask is None:
         abort(404)
 
     return jsonify(
         {
-            "status": localize_task_status(task["stat"]),
-            "progress": task["progress"],
-            "results": task["results"]
+            "status": localize_task_status(queuedTask.task.stat),
+            "progress": queuedTask.task.progress,
+            "results": queuedTask.task.results
          }
     )
 

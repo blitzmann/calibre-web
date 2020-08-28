@@ -751,7 +751,7 @@ def render_task_status(tasklist):
                 ret['runtime'] = format_runtime(task.runtime)
 
             # localize the task status
-            task['status'] = localize_task_status(task['stat'])
+            ret['status'] = localize_task_status(task.stat)
 
             ret['taskMessage'] = "{}: {}".format(_(task.name), task.message)
             ret['progress'] = "{} %".format(int(task.progress * 100))
