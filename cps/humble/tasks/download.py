@@ -62,6 +62,9 @@ class TaskDownloadBooks(CalibreTask):
             with open(tmp_file_path, 'wb') as f:
                 response = requests.get(dl["url"]["web"], stream=True)
                 # todo: if response fails (non 200) throw error
+                if response.status_code is not 200:
+                    return self._handleError("Failed with status {}: {}".format(response.status_code, response.reason))
+
                 total = response.headers.get('content-length')
 
                 if total is None:
@@ -105,7 +108,7 @@ class TaskDownloadBooks(CalibreTask):
 
         then = self.end_time
         now = datetime.now()
-        return orig_val and now < then + timedelta(minutes=TASK_RETENTION_MIN)
+        return orig_val and now > then + timedelta(minutes=TASK_RETENTION_MIN)
 
     @property
     def name(self):

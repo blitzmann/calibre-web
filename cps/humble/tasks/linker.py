@@ -127,11 +127,9 @@ class TaskDownloadLinker(CalibreTask):
     def dead(self):
         orig_val = super(TaskDownloadLinker, self).dead
 
-        time = self.end_time
+        then = self.end_time
         now = datetime.now()
-        then = time
-        myend = then + timedelta(minutes=TASK_RETENTION_MIN)
-        return orig_val and then <= now < myend
+        return orig_val and now > then + timedelta(minutes=TASK_RETENTION_MIN)
 
     @property
     def name(self):
