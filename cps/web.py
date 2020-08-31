@@ -1657,9 +1657,10 @@ def profile():
     kobo_support = feature_support['kobo'] and config.config_kobo_sync
     if feature_support['oauth'] and config.config_login_type == 2:
         oauth_status = get_oauth_status()
+        local_oauth_check = oauth_check
     else:
         oauth_status = None
-        oauth_check = {}
+        local_oauth_check = {}
 
     for book in current_user.downloads:
         downloadBook = calibre_db.get_book(book.book_id)
@@ -1683,7 +1684,8 @@ def profile():
                 return render_title_template("user_edit.html", content=current_user, downloads=downloads,
                                              title=_(u"%(name)s's profile", name=current_user.nickname), page="me",
                                              kobo_support=kobo_support,
-                                             registered_oauth=oauth_check, oauth_status=oauth_status)
+                                             registered_oauth=local_oauth_check, oauth_status=oauth_status)
+            current_user.email = to_save["email"]
         if "nickname" in to_save and to_save["nickname"] != current_user.nickname:
             # Query User nickname, if not existing, change
             if not ub.session.query(ub.User).filter(ub.User.nickname == to_save["nickname"]).scalar():
@@ -1696,11 +1698,10 @@ def profile():
                                              kobo_support=kobo_support,
                                              new_user=0, content=current_user,
                                              downloads=downloads,
-                                             registered_oauth=oauth_check,
+                                             registered_oauth=local_oauth_check,
                                              title=_(u"Edit User %(nick)s",
                                                      nick=current_user.nickname),
                                              page="edituser")
-            current_user.email = to_save["email"]
         if "show_random" in to_save and to_save["show_random"] == "on":
             current_user.random_books = 1
         if "default_language" in to_save:
@@ -1727,13 +1728,13 @@ def profile():
             return render_title_template("user_edit.html", content=current_user, downloads=downloads,
                                          translations=translations, kobo_support=kobo_support,
                                          title=_(u"%(name)s's profile", name=current_user.nickname), page="me",
-                                         registered_oauth=oauth_check, oauth_status=oauth_status)
+                                         registered_oauth=local_oauth_check, oauth_status=oauth_status)
         flash(_(u"Profile updated"), category="success")
         log.debug(u"Profile updated")
     return render_title_template("user_edit.html", translations=translations, profile=1, languages=languages,
                                  content=current_user, downloads=downloads, kobo_support=kobo_support,
                                  title=_(u"%(name)s's profile", name=current_user.nickname),
-                                 page="me", registered_oauth=oauth_check, oauth_status=oauth_status)
+                                 page="me", registered_oauth=local_oauth_check, oauth_status=oauth_status)
 
 
 # ###################################Show single book ##################################################################

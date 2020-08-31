@@ -99,10 +99,10 @@ def convert_book_format(book_id, calibrepath, old_book_format, new_book_format, 
             # text = _(u"%(format)s: %(book)s", format=new_book_format, book=book.title)
         else:
             settings = dict()
-        text = (u"%s -> %s: %s" % (old_book_format, new_book_format, book.title))
+        txt = (u"%s -> %s: %s" % (old_book_format, new_book_format, book.title))
         settings['old_book_format'] = old_book_format
         settings['new_book_format'] = new_book_format
-        WorkerThread.add(user_id, TaskConvert(file_path, book.id, text, settings, kindle_mail))
+        WorkerThread.add(user_id, TaskConvert(file_path, book.id, txt, settings, kindle_mail))
         return None
     else:
         error_message = _(u"%(format)s not found: %(fn)s",
@@ -129,7 +129,7 @@ def send_registration_mail(e_mail, user_name, default_password, resend=False):
     text += "Sincerely\r\n\r\n"
     text += "Your Calibre-Web team"
     WorkerThread.add(None, TaskEmail(
-        subject=(u'Get Started with Calibre-Web'),
+        subject=_(u'Get Started with Calibre-Web'),
         filepath=None,
         attachment=None,
         settings=config.get_mail_settings(),

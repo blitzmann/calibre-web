@@ -110,10 +110,10 @@ class TaskConvert(CalibreTask):
                 self._handleSuccess()
                 return file_path + format_new_ext
             else:
-                error_message = format_new_ext.upper() + ' format not found on disk'
+                error_message = _('%(format)s format not found on disk', format=format_new_ext.upper())
         log.info("ebook converter failed with error while converting book")
         if not error_message:
-            error_message = 'Ebook converter failed with unknown error'
+            error_message = _('Ebook converter failed with unknown error')
         self._handleError(error_message)
         return
 
@@ -193,7 +193,7 @@ class TaskConvert(CalibreTask):
                 ele = ele.decode('utf-8')
             log.debug(ele.strip('\n'))
             if not ele.startswith('Traceback') and not ele.startswith('  File'):
-                error_message = "Calibre failed with error: %s" % ele.strip('\n')
+                error_message = _("Calibre failed with error: %(error)s", ele.strip('\n'))
         return check, error_message
 
     @property
