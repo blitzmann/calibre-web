@@ -154,8 +154,11 @@ def modify_identifiers(input_identifiers, db_identifiers, db_session):
        input_identifiers is a list of read-to-persist Identifiers objects.
        db_identifiers is a list of already persisted list of Identifiers objects."""
     changed = False
-    input_dict = dict([ (identifier.type.lower(), identifier) for identifier in input_identifiers ])
-    db_dict = dict([ (identifier.type.lower(), identifier) for identifier in db_identifiers ])
+    error = False
+    input_dict = dict([(identifier.type.lower(), identifier) for identifier in input_identifiers])
+    if len(input_identifiers) != len(input_dict):
+        error = True
+    db_dict = dict([(identifier.type.lower(), identifier) for identifier in db_identifiers ])
     # delete db identifiers not present in input or modify them with input val
     for identifier_type, identifier in db_dict.items():
         if identifier_type not in input_dict.keys():
@@ -170,7 +173,7 @@ def modify_identifiers(input_identifiers, db_identifiers, db_session):
         if identifier_type not in db_dict.keys():
             db_session.add(identifier)
             changed = True
-    return changed
+    return changed, error
 
 @editbook.route("/ajax/delete/<int:book_id>")
 @login_required
@@ -501,7 +504,7 @@ def upload_single_file(request, book, book_id):
         if requested_file.filename != '':
             if '.' in requested_file.filename:
                 file_ext = requested_file.filename.rsplit('.', 1)[-1].lower()
-                if file_ext not in constants.EXTENSIONS_UPLOAD:
+                if file_ext not in constants.EXTENSIONS_UPLOAD and '' not in constants.EXTENSIONS_UPLOAD:
                     flash(_("File extension '%(ext)s' is not allowed to be uploaded to this server", ext=file_ext),
                           category="error")
                     return redirect(url_for('web.show_book', book_id=book.id))
@@ -595,6 +598,7 @@ def edit_book(book_id):
         merge_metadata(to_save, meta)
         # Update book
         edited_books_id = None
+
         #handle book title
         if book.title != to_save["book_title"].rstrip().strip():
             if to_save["book_title"] == '':
@@ -652,10 +656,12 @@ def edit_book(book_id):
             # Handle book comments/description
             modif_date |= edit_book_comments(to_save["description"], book)
 
-                    # Handle identifiers
+            # Handle identifiers
             input_identifiers = identifier_list(to_save, book)
-            modif_date |= modify_identifiers(input_identifiers, book.identifiers, calibre_db.session)
-
+            modification, warning = modify_identifiers(input_identifiers, book.identifiers, calibre_db.session)
+            if warning:
+                flash(_("Identifiers are not Case Sensitive, Overwriting Old Identifier"), category="warning")
+            modif_date |= modification
             # Handle book tags
             modif_date |= edit_book_tags(to_save['tags'], book)
 
@@ -684,6 +690,7 @@ def edit_book(book_id):
 
             if modif_date:
                 book.last_modified = datetime.utcnow()
+            calibre_db.session.merge(book)
             calibre_db.session.commit()
             if config.config_use_google_drive:
                 gdriveutils.updateGdriveCalibreFromLocal()
@@ -727,7 +734,7 @@ def identifier_list(to_save, book):
         val_key = id_val_prefix + type_key[len(id_type_prefix):]
         if val_key not in to_save.keys():
             continue
-        result.append( db.Identifiers(to_save[val_key], type_value, book.id) )
+        result.append(db.Identifiers(to_save[val_key], type_value, book.id))
     return result
 
 class CreatePathException(Exception):
@@ -772,62 +779,31 @@ def add_book_to_db(meta):
     if input_authors == ['']:
         input_authors = [_(u'Unknown')]  # prevent empty Author
 
-    sort_authors_list = list()
-    db_author = None
-    for inp in input_authors:
-        stored_author = calibre_db.session.query(db.Authors).filter(db.Authors.name == inp).first()
-        if not stored_author:
-            if not db_author:
-                db_author = db.Authors(inp, helper.get_sorted_author(inp), "")
-                calibre_db.session.add(db_author)
-                calibre_db.session.commit()
-            sort_author = helper.get_sorted_author(inp)
-        else:
-            if not db_author:
-                db_author = stored_author
-            sort_author = stored_author.sort
-        sort_authors_list.append(sort_author)  # helper.get_sorted_author(sort_author))
-    sort_authors = ' & '.join(sort_authors_list)
+        sort_authors_list = list()
+        db_author = None
+        for inp in input_authors:
+            stored_author = calibre_db.session.query(db.Authors).filter(db.Authors.name == inp).first()
+            if not stored_author:
+                if not db_author:
+                    db_author = db.Authors(inp, helper.get_sorted_author(inp), "")
+                    calibre_db.session.add(db_author)
+                    calibre_db.session.commit()
+                sort_author = helper.get_sorted_author(inp)
+            else:
+                if not db_author:
+                    db_author = stored_author
+                sort_author = stored_author.sort
+            sort_authors_list.append(sort_author)
+        sort_authors = ' & '.join(sort_authors_list)
+        title_dir = helper.get_valid_filename(title)
+        author_dir = helper.get_valid_filename(db_author.name)
 
-    title_dir = helper.get_valid_filename(title)
+        # combine path and normalize path from windows systems
+        path = os.path.join(author_dir, title_dir).replace('\\', '/')
+        # Calibre adds books with utc as timezone
+        db_book = db.Books(title, "", sort_authors, datetime.utcnow(), datetime(101, 1, 1),
+                           '1', datetime.utcnow(), path, meta.cover, db_author, [], "")
 
-    author_dir = helper.get_valid_filename(db_author.name)
-    filepath = os.path.join(config.config_calibre_dir, author_dir, title_dir)
-    saved_filename = os.path.join(filepath, title_dir + meta.extension.lower())
-
-    # check if file path exists, otherwise create it, copy file to calibre path and delete temp file
-    if not os.path.exists(filepath):
-        try:
-            os.makedirs(filepath)
-        except OSError as e:
-            msg = "Failed to create path %s (Permission denied)" % filepath
-            log.error(msg)
-            raise CreatePathException(filepath, msg)
-
-    try:
-        copyfile(meta.file_path, saved_filename)
-    except OSError as e:
-        msg = "Failed to move file %s: %s" % (saved_filename, e)
-        log.error(msg)
-        raise MoveFileException(saved_filename, msg, e)
-
-    try:
-        os.unlink(meta.file_path)
-    except Exception as e:
-        log.error("Failed to delete temp file %s", meta.file_path)
-
-    if meta.cover is None:
-        has_cover = 0
-        copyfile(os.path.join(constants.STATIC_DIR, 'generic_cover.jpg'),
-                 os.path.join(filepath, "cover.jpg"))
-    else:
-        has_cover = 1
-
-    # combine path and normalize path from windows systems
-    path = os.path.join(author_dir, title_dir).replace('\\', '/')
-    # Calibre adds books with utc as timezone
-    db_book = db.Books(title, "", sort_authors, datetime.utcnow(), datetime(101, 1, 1),
-                       '1', datetime.utcnow(), path, has_cover, db_author, [], "")
 
     modif_date |= modify_database_object(input_authors, db_book.authors, db.Authors, calibre_db.session,
                                          'author')
@@ -849,7 +825,7 @@ def add_book_to_db(meta):
     modif_date |= edit_book_series(meta.series, db_book)
 
     # Add file to book
-    file_size = os.path.getsize(saved_filename)
+    file_size = os.path.getsize(meta.file_path)
     db_data = db.Data(db_book, meta.extension.upper()[1:], file_size, title_dir)
     db_book.data.append(db_data)
     calibre_db.session.add(db_book)
@@ -857,23 +833,32 @@ def add_book_to_db(meta):
     # flush content, get db_book.id available
     calibre_db.session.flush()
 
-    # Comments needs book id therfore only possiblw after flush
+    # Comments needs book id therfore only possible after flush
     modif_date |= edit_book_comments(Markup(meta.description).unescape(), db_book)
 
     book_id = db_book.id
     title = db_book.title
 
-    error = helper.update_dir_stucture(book_id, config.config_calibre_dir, input_authors[0])
+    error = helper.update_dir_stucture(book_id,
+                                       config.config_calibre_dir,
+                                       input_authors[0],
+                                       meta.file_path,
+                                       title_dir + meta.extension)
 
     # move cover to final directory, including book id
-    if has_cover:
-        new_coverpath = os.path.join(config.config_calibre_dir, db_book.path, "cover.jpg")
-        try:
-            copyfile(meta.cover, new_coverpath)
+    if meta.cover:
+        coverfile = meta.cover
+    else:
+        coverfile = os.path.join(constants.STATIC_DIR, 'generic_cover.jpg')
+    new_coverpath = os.path.join(config.config_calibre_dir, db_book.path, "cover.jpg")
+
+    try:
+        copyfile(coverfile, new_coverpath)
+        if meta.cover:
             os.unlink(meta.cover)
-        except OSError as e:
-            log.error("Failed to move cover file %s: %s", new_coverpath, e)
-            cover_move_failed = (new_coverpath, e)
+    except OSError as e:
+        log.error("Failed to move cover file %s: %s", new_coverpath, e)
+        cover_move_failed = (new_coverpath, e)
 
     # save data to database, reread data
     calibre_db.session.commit()
@@ -905,7 +890,7 @@ def upload():
                 # check if file extension is correct
                 if '.' in requested_file.filename:
                     file_ext = requested_file.filename.rsplit('.', 1)[-1].lower()
-                    if file_ext not in constants.EXTENSIONS_UPLOAD:
+                    if file_ext not in constants.EXTENSIONS_UPLOAD and '' not in constants.EXTENSIONS_UPLOAD:
                         flash(
                             _("File extension '%(ext)s' is not allowed to be uploaded to this server",
                               ext=file_ext), category="error")
@@ -920,7 +905,7 @@ def upload():
                 except (IOError, OSError):
                     log.error("File %s could not saved to temp dir", requested_file.filename)
                     flash(_(u"File %(filename)s could not saved to temp dir",
-                            filename= requested_file.filename), category="error")
+                            filename=requested_file.filename), category="error")
                     return Response(json.dumps({"location": url_for("web.index")}), mimetype='application/json')
 
                 try:
