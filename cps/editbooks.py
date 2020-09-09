@@ -779,30 +779,30 @@ def add_book_to_db(meta):
     if input_authors == ['']:
         input_authors = [_(u'Unknown')]  # prevent empty Author
 
-        sort_authors_list = list()
-        db_author = None
-        for inp in input_authors:
-            stored_author = calibre_db.session.query(db.Authors).filter(db.Authors.name == inp).first()
-            if not stored_author:
-                if not db_author:
-                    db_author = db.Authors(inp, helper.get_sorted_author(inp), "")
-                    calibre_db.session.add(db_author)
-                    calibre_db.session.commit()
-                sort_author = helper.get_sorted_author(inp)
-            else:
-                if not db_author:
-                    db_author = stored_author
-                sort_author = stored_author.sort
-            sort_authors_list.append(sort_author)
-        sort_authors = ' & '.join(sort_authors_list)
-        title_dir = helper.get_valid_filename(title)
-        author_dir = helper.get_valid_filename(db_author.name)
+    sort_authors_list = list()
+    db_author = None
+    for inp in input_authors:
+        stored_author = calibre_db.session.query(db.Authors).filter(db.Authors.name == inp).first()
+        if not stored_author:
+            if not db_author:
+                db_author = db.Authors(inp, helper.get_sorted_author(inp), "")
+                calibre_db.session.add(db_author)
+                calibre_db.session.commit()
+            sort_author = helper.get_sorted_author(inp)
+        else:
+            if not db_author:
+                db_author = stored_author
+            sort_author = stored_author.sort
+        sort_authors_list.append(sort_author)
+    sort_authors = ' & '.join(sort_authors_list)
+    title_dir = helper.get_valid_filename(title)
+    author_dir = helper.get_valid_filename(db_author.name)
 
-        # combine path and normalize path from windows systems
-        path = os.path.join(author_dir, title_dir).replace('\\', '/')
-        # Calibre adds books with utc as timezone
-        db_book = db.Books(title, "", sort_authors, datetime.utcnow(), datetime(101, 1, 1),
-                           '1', datetime.utcnow(), path, meta.cover, db_author, [], "")
+    # combine path and normalize path from windows systems
+    path = os.path.join(author_dir, title_dir).replace('\\', '/')
+    # Calibre adds books with utc as timezone
+    db_book = db.Books(title, "", sort_authors, datetime.utcnow(), datetime(101, 1, 1),
+                       '1', datetime.utcnow(), path, meta.cover, db_author, [], "")
 
 
     modif_date |= modify_database_object(input_authors, db_book.authors, db.Authors, calibre_db.session,
