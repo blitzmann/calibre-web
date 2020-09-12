@@ -4,7 +4,7 @@ from shutil import copyfile
 from datetime import datetime, timedelta
 from sqlalchemy.exc import SQLAlchemyError
 
-from cps import logger, config, calibre_db
+from cps import logger, config, db
 from cps.db import Data
 from cps.services.worker import CalibreTask
 from cps.uploader import process
@@ -70,9 +70,10 @@ class TaskDownloadLinker(CalibreTask):
                 languages=next((meta.languages for meta in processed if meta.languages not in (None, "")), None) or ""
             )
 
+            local_session = db.Session()
             # todo: check to see if the book exists. If it does, add everything under that format.
 
-            results = add_book_to_db(meta)
+            results = add_book_to_db(meta, local_session)
             db_book = results.db_book
 
             ## From here we should have the book added to the database, now we need to link the other downloads to the book
@@ -90,16 +91,16 @@ class TaskDownloadLinker(CalibreTask):
 
                 ext_upper = format.extension[1:].upper()
                 file_size = os.path.getsize(format.file_path)
-                is_format = calibre_db.get_book_format(db_book.id, ext_upper)
+                is_format = local_session.get_book_format(db_book.id, ext_upper)
 
                 # Format entry already exists, no need to update the database
                 if is_format:
                     log.warning('Book format %s already existing', ext_upper)
                 else:
                     db_format = Data(db_book.id, ext_upper, file_size, file_name)
-                    calibre_db.session.add(db_format)
-                    calibre_db.session.commit()
-                    calibre_db.update_title_sort(config)
+                    local_session.session.add(db_format)
+                    local_session.session.commit()
+                    local_session.update_title_sort(config)
 
             # link to the processed book
             # self.UIqueue[index]['taskMess'] = "<a href=\"/book/{book_id}\">{message}</a>".format(
@@ -108,7 +109,7 @@ class TaskDownloadLinker(CalibreTask):
             # )
 
         except SQLAlchemyError as e:
-            calibre_db.session.rollback()
+            local_session.session.rollback()
             log.error('Database error: %s', e)
             self._handleError(str(e))
         except Exception as e:
