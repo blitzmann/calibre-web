@@ -70,7 +70,7 @@ class TaskDownloadLinker(CalibreTask):
                 languages=next((meta.languages for meta in processed if meta.languages not in (None, "")), None) or ""
             )
 
-            local_session = db.Session()
+            local_session = db.CalibreDB()
             # todo: check to see if the book exists. If it does, add everything under that format.
 
             results = add_book_to_db(meta, local_session)
