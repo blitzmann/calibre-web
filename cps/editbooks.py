@@ -755,7 +755,7 @@ def add_book_to_db(meta, session):
     Returns a namedtuple representsing the results of adding the book, along with any warnings / errors the calling
     function may want to know about
     '''
-    session.connection().connection.connection.create_function('uuid4', 0, lambda: str(uuid4()))
+    calibre_db.session.connection().connection.connection.create_function('uuid4', 0, lambda: str(uuid4()))
 
     modif_date = False
     title = meta.title
